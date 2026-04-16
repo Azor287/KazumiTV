@@ -1,0 +1,21 @@
+# XcodeGen
+*.xcodeproj/
+*.xcworkspace/
+
+# Build
+build/
+DerivedData/
+*.build/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+
+# Swift Package Manager
+.swiftpm/
+Packages/
