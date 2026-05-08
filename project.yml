@@ -13,6 +13,17 @@ settings:
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
 
+packages:
+  Fuzi:
+    url: https://github.com/cezheng/Fuzi
+    from: "3.1.3"
+  SQLite:
+    url: https://github.com/stephencelis/SQLite.swift
+    from: "0.15.3"
+  Kingfisher:
+    url: https://github.com/onevcat/Kingfisher
+    from: "8.1.0"
+
 targets:
   KazumiTV:
     type: application
@@ -22,6 +33,7 @@ targets:
       - path: Sources
       - path: Views
       - path: Models
+      - path: ViewModels
       - path: Services
       - path: Resources
     settings:
@@ -29,10 +41,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kazumi.tv
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME: LaunchScreenImage
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "3"
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+    dependencies:
+      - package: Fuzi
+      - package: SQLite
+      - package: Kingfisher
     info:
       path: Resources/Info.plist
       properties:
@@ -43,7 +60,9 @@ targets:
         CFBundleShortVersionString: "1.0.0"
         CFBundlePackageType: APPL
         CFBundleExecutable: KazumiTV
-        UILaunchScreen: {}
+        UILaunchScreen:
+          UIImageName: LaunchScreenImage
+          UIImageRespectsSafeAreaInsets: false
         UIRequiredDeviceCapabilities:
           - tvOS
         UISupportedInterfaceOrientations~tvOS:

@@ -1,21 +1,94 @@
-# XcodeGen
+# XcodeGen generated project
 *.xcodeproj/
 *.xcworkspace/
 
-# Build
+# Xcode build products and user state
 build/
 DerivedData/
 *.build/
-
-# macOS
-.DS_Store
-*.swp
-*~
-
-# IDE
-.vscode/
-.idea/
+*.xcarchive
+*.dSYM/
+*.dSYM.zip
+*.ipa
+*.hmap
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.testResult
 
 # Swift Package Manager
 .swiftpm/
+.build/
 Packages/
+
+# Python server environment and caches
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Playwright browser/cache files
+.playwright/
+playwright/.cache/
+playwright/browsers/
+kazumi-server/playwright/.cache/
+
+# Logs and runtime output
+*.log
+server.log
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local editor/OS files
+.DS_Store
+.Spotlight-V100/
+.Trashes/
+.vscode/
+.idea/
+*.swp
+*.tmp
+*.temp
+*~
+
+# Local AI assistant files
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.aider*
+.continue/
+.windsurf/
+.windsurfrules
+.clinerules
+.roo/
+.kilocode/
+
+# Local Codex planning artifacts
+task_plan.md
+findings.md
+progress.md
+
+# CocoaPods, if introduced later
+# Pods/

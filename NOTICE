@@ -1,0 +1,15 @@
+KazumiTV
+
+KazumiTV 是 Kazumi 的独立 Swift/tvOS 移植版本：
+https://github.com/Predidit/Kazumi
+
+根据本仓库维护者说明，本移植版本已获得 Kazumi 原作者同意后开发。
+
+KazumiTV 与 Kazumi 并非同一作者、同一维护者或同一发布主体。原 Kazumi
+项目仍归其原作者及贡献者所有，并由其原项目维护。
+
+KazumiTV 采用与原项目相同的许可证，基于 GNU General Public License
+version 3 发布。详见 LICENSE 文件。
+
+KazumiTV 不托管、不分发、也不提供任何媒体内容。用户需要自行确保其使用
+方式、插件规则、数据源及网络请求符合所在地法律法规及相关服务条款。

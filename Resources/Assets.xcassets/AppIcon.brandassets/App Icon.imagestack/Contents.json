@@ -1,0 +1,23 @@
+{
+  "layers" : [
+    {
+      "filename" : "Front.imagestacklayer"
+    },
+    {
+      "filename" : "Middle.imagestacklayer"
+    },
+    {
+      "filename" : "Back.imagestacklayer"
+    }
+  ],
+  "info" : {
+    "author" : "com.kazumi.tv",
+    "version" : 1
+  },
+  "properties" : {
+    "canvasSize" : {
+      "height" : 240,
+      "width" : 400
+    }
+  }
+}
