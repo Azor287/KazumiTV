@@ -15,6 +15,17 @@ struct KazumiTVApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
+                .task {
+                    await initializeStorage()
+                }
+        }
+    }
+
+    private func initializeStorage() async {
+        do {
+            try await DatabaseManager.shared.setup()
+        } catch {
+            print("KazumiTVApp: failed to initialize local storage: \(error.localizedDescription)")
         }
     }
 }

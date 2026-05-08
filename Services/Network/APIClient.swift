@@ -1,0 +1,204 @@
+//
+//  APIClient.swift
+//  KazumiTV
+//
+//  HTTP Client using URLSession
+//
+
+import Foundation
+
+actor APIClient {
+    static let shared = APIClient()
+
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    private init() {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        self.session = URLSession(configuration: config)
+
+        self.decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+    }
+
+    // MARK: - Request Methods
+
+    func get(url: URL, headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        return (data, httpResponse)
+    }
+
+    func post(url: URL, body: [String: Any], headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let jsonData = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = jsonData
+
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        return (data, httpResponse)
+    }
+
+    func fetchHTML(url: URL, headers: [String: String] = [:]) async throws -> String {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.15.3 (KHTML, like Gecko) Version/17.0 Safari/605.15.3", forHTTPHeaderField: "User-Agent")
+
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            throw APIError.decodingError
+        }
+
+        return html
+    }
+
+    func postFormHTML(url: URL, form: [String: String], headers: [String: String] = [:]) async throws -> String {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let body = form.map { key, value in
+            "\(percentEncodeFormComponent(key))=\(percentEncodeFormComponent(value))"
+        }
+        .joined(separator: "&")
+        request.httpBody = body.data(using: .utf8)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            throw APIError.decodingError
+        }
+
+        return html
+    }
+
+    private func percentEncodeFormComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    func download(url: URL, headers: [String: String] = [:]) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+
+        return data
+    }
+
+    // MARK: - JSON Decoding
+
+    func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        return try decoder.decode(type, from: data)
+    }
+}
+
+// MARK: - API Error
+enum APIError: LocalizedError {
+    case invalidResponse
+    case httpError(statusCode: Int)
+    case decodingError
+    case networkError(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "Invalid response from server"
+        case .httpError(let statusCode):
+            return "HTTP Error: \(statusCode)"
+        case .decodingError:
+            return "Failed to decode response"
+        case .networkError(let error):
+            return "Network error: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - HTTP Headers Helper
+struct HTTPHeaders {
+    static let defaultHeaders = [
+        "User-Agent": "KazumiTV/1.0",
+        "Accept": "application/json"
+    ]
+
+    static func bangumiHeaders() -> [String: String] {
+        return [
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.15.3 (KHTML, like Gecko) Version/17.0 Safari/605.15.3",
+            "Accept": "application/json"
+        ]
+    }
+}

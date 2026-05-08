@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "top-shelf-wide.png",
+      "idiom" : "tv",
+      "scale" : "1x"
+    }
+  ],
+  "info" : {
+    "author" : "com.kazumi.tv",
+    "version" : 1
+  }
+}

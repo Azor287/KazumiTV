@@ -1,0 +1,13 @@
+{
+  "images" : [
+    {
+      "filename" : "back.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    }
+  ],
+  "info" : {
+    "author" : "com.kazumi.tv",
+    "version" : 1
+  }
+}
