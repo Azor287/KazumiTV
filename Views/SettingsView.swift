@@ -431,7 +431,7 @@ struct SettingsView: View {
                         .font(.headline)
                         .foregroundColor(.kzText)
 
-                    Text("版本 1.0.0")
+                    Text(appVersionText)
                         .font(.subheadline)
                         .foregroundColor(.kzTextSecondary)
 
@@ -470,6 +470,22 @@ struct SettingsView: View {
         Divider()
             .background(Color.kzTextSecondary.opacity(0.14))
             .padding(.leading, 82)
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+
+        switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
+        case let (.some(version), .some(build)):
+            return "版本 \(version) (\(build))"
+        case let (.some(version), .none):
+            return "版本 \(version)"
+        case let (.none, .some(build)):
+            return "构建 \(build)"
+        case (.none, .none):
+            return "版本未知"
+        }
     }
 
     private func settingsSection<Content: View>(
