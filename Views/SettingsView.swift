@@ -791,7 +791,6 @@ private struct TVServerURLTextField: UIViewRepresentable {
         if focusRequestID != context.coordinator.lastFocusRequestID,
            uiView.window != nil {
             context.coordinator.lastFocusRequestID = focusRequestID
-            wantsTextInput = true
             DispatchQueue.main.async {
                 uiView.becomeFirstResponder()
             }
