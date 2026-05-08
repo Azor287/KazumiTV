@@ -7,5 +7,5 @@ cd "$(dirname "$0")"
 pkill -f "api_server.py" 2>/dev/null
 sleep 1
 
-# 启动服务器
-./venv/bin/python api_server.py
+# 启动服务器，透传 --port/--host 等参数
+./venv/bin/python api_server.py "$@"

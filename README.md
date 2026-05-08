@@ -60,6 +60,25 @@ cd kazumi-server
 http://192.168.1.100:5001
 ```
 
+如果需要自定义服务端口，可以在启动服务器时传入 `--port` 或 `-p`：
+
+```bash
+cd kazumi-server
+./start.sh --port 6000
+```
+
+然后在 tvOS 应用设置中填写对应端口：
+
+```text
+http://192.168.1.100:6000
+```
+
+如需限制监听地址，也可以传入 `--host`。例如只允许本机访问：
+
+```bash
+./start.sh --host 127.0.0.1 --port 6000
+```
+
 在真实 Apple TV 设备上测试时，请使用运行服务器的 Mac 或主机的局域网 IP 地址。
 
 ## 与 Kazumi 的关系
