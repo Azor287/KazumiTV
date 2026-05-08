@@ -35,6 +35,7 @@ struct SettingsView: View {
 
     private enum SettingsFocus: Hashable {
         case serverProxyEnabled
+        case serverURL
     }
 
     enum ConnectionStatus {
@@ -150,25 +151,45 @@ struct SettingsView: View {
                 }
 
                 HStack(spacing: 14) {
+                    let isServerURLFocused = focusedSetting == .serverURL
+
                     TextField("http://127.0.0.1:5001", text: $serverURL)
                         .textFieldStyle(.plain)
                         .font(.headline)
-                        .foregroundColor(.kzText)
+                        .foregroundColor(isServerURLFocused ? .kzOnPrimaryContainer : .kzText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .padding(.horizontal, 18)
                         .frame(height: 58)
-                        .background(Color.kzSurfaceContainerLow)
+                        .background(
+                            isServerURLFocused
+                                ? Color.kzPrimaryContainer.opacity(0.78)
+                                : Color.kzSurfaceContainerLow
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.kzTextSecondary.opacity(0.18), lineWidth: 1)
+                                .stroke(
+                                    isServerURLFocused
+                                        ? Color.kzPrimary.opacity(0.82)
+                                        : Color.kzTextSecondary.opacity(0.18),
+                                    lineWidth: isServerURLFocused ? 2 : 1
+                                )
                         )
+                        .shadow(
+                            color: isServerURLFocused ? Color.kzFocusGlow : Color.clear,
+                            radius: isServerURLFocused ? 16 : 0,
+                            x: 0,
+                            y: isServerURLFocused ? 6 : 0
+                        )
+                        .focusEffectDisabled()
+                        .focused($focusedSetting, equals: .serverURL)
                         .onSubmit(saveServerURL)
                         .onChange(of: serverURL) { _, _ in
                             connectionStatus = .unknown
                         }
+                        .animation(.easeOut(duration: 0.16), value: isServerURLFocused)
 
                     Button {
                         saveServerURL()
