@@ -106,11 +106,6 @@ struct SettingsView: View {
             wantsServerURLTextInput = false
             isServerURLEditing = false
         }
-        .onChange(of: focusedSetting) { _, newFocus in
-            if newFocus != .serverURL {
-                wantsServerURLTextInput = false
-            }
-        }
         .alert("清除观看历史", isPresented: $showClearHistoryConfirmation) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
@@ -212,7 +207,7 @@ struct SettingsView: View {
                     }
                     .animation(.easeOut(duration: 0.16), value: isServerURLActive)
                     .onMoveCommand { direction in
-                        if direction == .right {
+                        if direction == .right && !isServerURLEditing {
                             wantsServerURLTextInput = false
                         }
                     }
