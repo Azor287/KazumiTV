@@ -1,0 +1,45 @@
+name: Bug 报告
+description: 报告 KazumiTV 中可以复现的问题
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请说明发生了什么，以及你期望发生什么。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供尽量具体的步骤。
+      placeholder: |
+        1. 打开 ...
+        2. 选择 ...
+        3. 看到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: 请填写应用版本、commit hash 或分支。
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 运行环境
+      options:
+        - Apple TV 真机
+        - tvOS Simulator
+        - Python 代理服务
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 如有相关日志、截图或录屏，请贴在这里。请不要包含 token、账号或隐私信息。
