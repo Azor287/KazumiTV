@@ -7,6 +7,7 @@
 
 import Kingfisher
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -31,10 +32,14 @@ struct SettingsView: View {
     @State private var noticeText: String?
     @State private var showClearHistoryConfirmation = false
     @State private var showResetConfirmation = false
+    @State private var serverURLFocusRequestID = 0
+    @State private var wantsServerURLTextInput = false
+    @State private var isServerURLEditing = false
     @FocusState private var focusedSetting: SettingsFocus?
 
     private enum SettingsFocus: Hashable {
         case serverProxyEnabled
+        case serverURL
     }
 
     enum ConnectionStatus {
@@ -98,6 +103,8 @@ struct SettingsView: View {
         }
         .onDisappear {
             focusedSetting = nil
+            wantsServerURLTextInput = false
+            isServerURLEditing = false
         }
         .alert("清除观看历史", isPresented: $showClearHistoryConfirmation) {
             Button("取消", role: .cancel) {}
@@ -150,25 +157,60 @@ struct SettingsView: View {
                 }
 
                 HStack(spacing: 14) {
-                    TextField("http://127.0.0.1:5001", text: $serverURL)
-                        .textFieldStyle(.plain)
-                        .font(.headline)
-                        .foregroundColor(.kzText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .padding(.horizontal, 18)
-                        .frame(height: 58)
-                        .background(Color.kzSurfaceContainerLow)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.kzTextSecondary.opacity(0.18), lineWidth: 1)
+                    let isServerURLActive = focusedSetting == .serverURL || isServerURLEditing
+
+                    HStack(spacing: 0) {
+                        TVServerURLTextField(
+                            text: $serverURL,
+                            placeholder: "http://127.0.0.1:5001",
+                            focusRequestID: serverURLFocusRequestID,
+                            wantsTextInput: $wantsServerURLTextInput,
+                            isEditing: $isServerURLEditing,
+                            isActive: isServerURLActive,
+                            onSubmit: saveServerURL
                         )
-                        .onSubmit(saveServerURL)
-                        .onChange(of: serverURL) { _, _ in
-                            connectionStatus = .unknown
+                        .frame(height: 28)
+                    }
+                    .padding(.horizontal, 18)
+                    .frame(height: 58)
+                    .background(
+                        isServerURLActive
+                            ? Color.kzPrimaryContainer.opacity(0.78)
+                            : Color.kzSurfaceContainerLow
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                isServerURLActive
+                                    ? Color.kzPrimary.opacity(0.82)
+                                    : Color.kzTextSecondary.opacity(0.18),
+                                lineWidth: isServerURLActive ? 2 : 1
+                            )
+                    )
+                    .shadow(
+                        color: isServerURLActive ? Color.kzFocusGlow : Color.clear,
+                        radius: isServerURLActive ? 16 : 0,
+                        x: 0,
+                        y: isServerURLActive ? 6 : 0
+                    )
+                    .focusable(true)
+                    .focusEffectDisabled()
+                    .focused($focusedSetting, equals: .serverURL)
+                    .onTapGesture {
+                        focusedSetting = .serverURL
+                        wantsServerURLTextInput = true
+                        serverURLFocusRequestID += 1
+                    }
+                    .onChange(of: serverURL) { _, _ in
+                        connectionStatus = .unknown
+                    }
+                    .animation(.easeOut(duration: 0.16), value: isServerURLActive)
+                    .onMoveCommand { direction in
+                        if direction == .right && !isServerURLEditing {
+                            wantsServerURLTextInput = false
                         }
+                    }
 
                     Button {
                         saveServerURL()
@@ -389,7 +431,7 @@ struct SettingsView: View {
                         .font(.headline)
                         .foregroundColor(.kzText)
 
-                    Text("版本 1.0.0")
+                    Text(appVersionText)
                         .font(.subheadline)
                         .foregroundColor(.kzTextSecondary)
 
@@ -428,6 +470,22 @@ struct SettingsView: View {
         Divider()
             .background(Color.kzTextSecondary.opacity(0.14))
             .padding(.leading, 82)
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+
+        switch (version?.isEmpty == false ? version : nil, build?.isEmpty == false ? build : nil) {
+        case let (.some(version), .some(build)):
+            return "版本 \(version) (\(build))"
+        case let (.some(version), .none):
+            return "版本 \(version)"
+        case let (.none, .some(build)):
+            return "构建 \(build)"
+        case (.none, .none):
+            return "版本未知"
+        }
     }
 
     private func settingsSection<Content: View>(
@@ -691,6 +749,120 @@ struct SettingsView: View {
             withAnimation(.easeOut(duration: 0.18)) {
                 noticeText = nil
             }
+        }
+    }
+}
+
+private struct TVServerURLTextField: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let focusRequestID: Int
+    @Binding var wantsTextInput: Bool
+    @Binding var isEditing: Bool
+    let isActive: Bool
+    let onSubmit: () -> Void
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField(frame: .zero)
+        textField.backgroundColor = .clear
+        textField.borderStyle = .none
+        textField.textColor = UIColor(Color.kzText)
+        textField.tintColor = UIColor(Color.kzPrimary)
+        textField.font = UIFont.preferredFont(forTextStyle: .headline)
+        textField.returnKeyType = .done
+        textField.keyboardType = .URL
+        textField.keyboardAppearance = .dark
+        textField.clearButtonMode = .whileEditing
+        textField.autocorrectionType = .no
+        textField.autocapitalizationType = .none
+        textField.delegate = context.coordinator
+        textField.attributedPlaceholder = placeholderText(isActive: false)
+        textField.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.textDidChange(_:)),
+            for: .editingChanged
+        )
+
+        return textField
+    }
+
+    func updateUIView(_ uiView: UITextField, context: Context) {
+        if uiView.text != text {
+            uiView.text = text
+        }
+
+        uiView.textColor = UIColor(isActive ? Color.kzOnPrimaryContainer : Color.kzText)
+        uiView.tintColor = UIColor(Color.kzPrimary)
+        uiView.backgroundColor = .clear
+        uiView.attributedPlaceholder = placeholderText(isActive: isActive)
+
+        context.coordinator.wantsTextInput = $wantsTextInput
+        context.coordinator.isEditing = $isEditing
+
+        if focusRequestID != context.coordinator.lastFocusRequestID,
+           uiView.window != nil {
+            context.coordinator.lastFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                uiView.becomeFirstResponder()
+            }
+        } else if !wantsTextInput, uiView.isFirstResponder {
+            DispatchQueue.main.async {
+                uiView.resignFirstResponder()
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, wantsTextInput: $wantsTextInput, isEditing: $isEditing, onSubmit: onSubmit)
+    }
+
+    private func placeholderText(isActive: Bool) -> NSAttributedString {
+        NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: UIColor(isActive ? Color.kzOnPrimaryContainer.opacity(0.52) : Color.kzTextSecondary.opacity(0.62)),
+                .font: UIFont.preferredFont(forTextStyle: .headline)
+            ]
+        )
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        @Binding private var text: String
+        var wantsTextInput: Binding<Bool>
+        var isEditing: Binding<Bool>
+        var lastFocusRequestID = 0
+        private let onSubmit: () -> Void
+
+        init(
+            text: Binding<String>,
+            wantsTextInput: Binding<Bool>,
+            isEditing: Binding<Bool>,
+            onSubmit: @escaping () -> Void
+        ) {
+            _text = text
+            self.wantsTextInput = wantsTextInput
+            self.isEditing = isEditing
+            self.onSubmit = onSubmit
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            text = textField.text ?? ""
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            onSubmit()
+            wantsTextInput.wrappedValue = false
+            textField.resignFirstResponder()
+            return true
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            isEditing.wrappedValue = true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            wantsTextInput.wrappedValue = false
+            isEditing.wrappedValue = false
         }
     }
 }
