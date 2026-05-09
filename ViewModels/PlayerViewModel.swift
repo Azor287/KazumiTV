@@ -248,6 +248,10 @@ class PlayerViewModel: ObservableObject {
         playerController.togglePlayPause()
     }
 
+    func beginInteractiveSeek() {
+        playerController.beginInteractiveSeek()
+    }
+
     func seek(to time: TimeInterval) {
         playerController.seek(to: time)
     }

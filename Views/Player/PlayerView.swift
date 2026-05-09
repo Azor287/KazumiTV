@@ -1221,6 +1221,8 @@ struct PlayerView: View {
     }
 
     private func adjustDirectionalSeek(by delta: TimeInterval, feedback: SeekFeedback) {
+        viewModel.beginInteractiveSeek()
+
         if viewModel.duration <= 0 {
             delta < 0 ? viewModel.seekBackward() : viewModel.seekForward()
             showSeekFeedback(feedback)
@@ -1286,6 +1288,7 @@ struct PlayerView: View {
         directionalSeekCommitTask?.cancel()
         clearCommittedSeekDisplay()
         cancelControlsAutoHide()
+        viewModel.beginInteractiveSeek()
         scrubPreviewTime = targetTime
     }
 
