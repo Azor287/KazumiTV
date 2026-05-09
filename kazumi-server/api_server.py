@@ -11,10 +11,13 @@ Kazumi Video Scraper Server
 from flask import Flask, request, jsonify, Response, stream_with_context
 import requests
 from bs4 import BeautifulSoup
+from contextlib import suppress
 import re
 import logging
 import argparse
+import os
 import random
+import threading
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlencode
 
 # 配置日志
@@ -27,6 +30,17 @@ RULE_REPOSITORY_BASE_URLS = [
     "https://raw.githubusercontent.com/Predidit/KazumiRules/main/",
     "https://cdn.jsdelivr.net/gh/Predidit/KazumiRules@main/",
 ]
+
+
+def positive_int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
+MAX_PLAYWRIGHT_JOBS = positive_int_env("KAZUMI_MAX_PLAYWRIGHT_JOBS", 1)
+PLAYWRIGHT_SEMAPHORE = threading.BoundedSemaphore(MAX_PLAYWRIGHT_JOBS)
 
 # 默认请求头
 KAZUMI_USER_AGENTS = [
@@ -85,8 +99,17 @@ def scrape_video():
     try:
         logger.info(f"正在抓取: {url} (插件: {plugin})")
 
+        if not PLAYWRIGHT_SEMAPHORE.acquire(blocking=False):
+            return jsonify({
+                "success": False,
+                "error": "服务器正忙，已有视频抓取任务正在运行，请稍后重试"
+            }), 503
+
         # 使用 Playwright 渲染抓取，保持客户端选择的播放线路。
-        result = scrape_selected_line(url, plugin)
+        try:
+            result = scrape_selected_line(url, plugin)
+        finally:
+            PLAYWRIGHT_SEMAPHORE.release()
 
         if result:
             return jsonify({
@@ -122,7 +145,16 @@ def scrape_video_js():
         return jsonify({"error": "缺少 url 参数"}), 400
 
     try:
-        result = scrape_selected_line(url, "default")
+        if not PLAYWRIGHT_SEMAPHORE.acquire(blocking=False):
+            return jsonify({
+                "success": False,
+                "error": "服务器正忙，已有视频抓取任务正在运行，请稍后重试"
+            }), 503
+
+        try:
+            result = scrape_selected_line(url, "default")
+        finally:
+            PLAYWRIGHT_SEMAPHORE.release()
 
         if result:
             return jsonify({
@@ -254,11 +286,16 @@ def proxy_m3u8():
             accept="application/vnd.apple.mpegurl,application/x-mpegURL,*/*",
             timeout=30,
         )
+        try:
+            playlist_text = upstream.text
+        finally:
+            upstream.close()
+
         PLAYLIST_CACHE[remote_url] = {
-            "text": upstream.text,
+            "text": playlist_text,
             "referer": effective_referer,
         }
-        playlist = rewrite_m3u8_playlist(upstream.text, remote_url, effective_referer, source_page)
+        playlist = rewrite_m3u8_playlist(playlist_text, remote_url, effective_referer, source_page)
         return Response(
             playlist,
             status=upstream.status_code,
@@ -313,6 +350,13 @@ def proxy_media():
             value = header_value(upstream.headers, header_name)
             if value:
                 response_headers[header_name] = value
+
+        if request.method == "HEAD":
+            upstream.close()
+            return Response(
+                status=upstream.status_code,
+                headers=response_headers,
+            )
 
         def generate_body():
             try:
@@ -912,38 +956,53 @@ def fetch_with_chromium(remote_url: str, headers: dict, timeout: int = 30) -> Me
     except ImportError as e:
         raise RuntimeError(f"playwright 未安装: {e}")
 
+    if not PLAYWRIGHT_SEMAPHORE.acquire(timeout=5):
+        raise RuntimeError("Chromium 抓取通道正忙，请稍后重试")
+
     accept_language = headers.get("Accept-Language", DEFAULT_HEADERS["Accept-Language"])
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--autoplay-policy=user-gesture-required',
-            ],
-        )
-        context = browser.new_context(
-            user_agent=headers.get("User-Agent", DEFAULT_HEADERS["User-Agent"]),
-            locale=accept_language.split(",")[0],
-            timezone_id="Asia/Shanghai",
-            extra_http_headers=headers,
-            ignore_https_errors=True,
-        )
-        install_browser_stealth(context)
-        page = context.new_page()
-        try:
-            response = page.goto(remote_url, wait_until="commit", timeout=timeout * 1000)
-            if response is None:
-                raise RuntimeError("Chromium 未收到响应")
-            body = response.body()
-            if response.status >= 400:
-                raise requests.HTTPError(
-                    f"{response.status} Client Error for url: {remote_url}"
+    try:
+        with sync_playwright() as p:
+            browser = None
+            context = None
+            page = None
+            try:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--autoplay-policy=user-gesture-required',
+                    ],
                 )
-            return MemoryHTTPResponse(body, response.status, response.headers, remote_url)
-        finally:
-            page.close()
-            context.close()
-            browser.close()
+                context = browser.new_context(
+                    user_agent=headers.get("User-Agent", DEFAULT_HEADERS["User-Agent"]),
+                    locale=accept_language.split(",")[0],
+                    timezone_id="Asia/Shanghai",
+                    extra_http_headers=headers,
+                    ignore_https_errors=True,
+                )
+                install_browser_stealth(context)
+                page = context.new_page()
+                response = page.goto(remote_url, wait_until="commit", timeout=timeout * 1000)
+                if response is None:
+                    raise RuntimeError("Chromium 未收到响应")
+                body = response.body()
+                if response.status >= 400:
+                    raise requests.HTTPError(
+                        f"{response.status} Client Error for url: {remote_url}"
+                    )
+                return MemoryHTTPResponse(body, response.status, response.headers, remote_url)
+            finally:
+                with suppress(Exception):
+                    if page:
+                        page.close()
+                with suppress(Exception):
+                    if context:
+                        context.close()
+                with suppress(Exception):
+                    if browser:
+                        browser.close()
+    finally:
+        PLAYWRIGHT_SEMAPHORE.release()
 
 
 def install_browser_stealth(context):
@@ -1488,6 +1547,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Kazumi Video Scraper Server")
     parser.add_argument("--port", "-p", type=int, default=5001, help="服务器端口 (默认: 5001)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="服务器地址 (默认: 0.0.0.0)")
+    parser.add_argument("--debug", action="store_true", help="启用 Flask 调试模式")
     args = parser.parse_args()
 
     print(f"""
@@ -1506,4 +1566,4 @@ if __name__ == "__main__":
 ║    playwright install chromium                            ║
 ╚═══════════════════════════════════════════════════════════╝
     """)
-    app.run(host=args.host, port=args.port, debug=True, threaded=True)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True, use_reloader=False)
