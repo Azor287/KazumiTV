@@ -10,6 +10,14 @@ KazumiTV 是 [Kazumi](https://github.com/Predidit/Kazumi) 的独立 Apple TV/tvO
 
 KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，由于 tvOS 无法在应用内直接执行与桌面端相同的网页解析和 JavaScript 工作流，因此项目使用本地或服务端代理来解析视频 URL。
 
+## 使用截图
+
+以下截图仅用于展示 KazumiTV 在 Apple TV 真机上的界面效果，截图中的媒体画面与海报版权归原权利方所有。
+
+| 推荐页 | 详情页 | 播放器 |
+| --- | --- | --- |
+| ![KazumiTV 推荐页](docs/images/screenshot-home.jpeg) | ![KazumiTV 详情页](docs/images/screenshot-detail.jpeg) | ![KazumiTV 播放器](docs/images/screenshot-player.jpeg) |
+
 ## 架构
 
 - tvOS 应用：Swift、SwiftUI、MVVM
