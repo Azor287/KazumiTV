@@ -7,7 +7,9 @@
 
 import Foundation
 import AVFoundation
+import AVKit
 import Combine
+import UIKit
 
 @MainActor
 class AVPlayerController: ObservableObject {
@@ -29,6 +31,11 @@ class AVPlayerController: ObservableObject {
     private var seekGeneration: UInt64 = 0
     private var initialSeekTime: TimeInterval?
     private var didApplyInitialSeek = false
+    private var superResolutionMode: SuperResolutionMode = .off
+    private var superResolutionApplyGeneration: UInt64 = 0
+    private var preparedSuperResolutionModes: Set<SuperResolutionMode> = []
+    private var superResolutionCompositionTask: Task<Void, Never>?
+    private var preferredDisplayCriteriaTask: Task<Void, Never>?
 
     // MARK: - Current Source
     private(set) var currentSource: VideoSource?
@@ -75,7 +82,9 @@ class AVPlayerController: ObservableObject {
         player?.volume = volume
         player?.rate = playbackRate
 
+        applyPreferredDisplayCriteria(for: asset)
         setupObservers()
+        setSuperResolutionMode(superResolutionMode)
     }
 
     func loadVideo(url: URL, headers: [String: String] = [:]) {
@@ -148,6 +157,24 @@ class AVPlayerController: ObservableObject {
     func setVolume(_ volume: Float) {
         self.volume = max(0, min(1, volume))
         player?.volume = self.volume
+    }
+
+    func setSuperResolutionMode(_ mode: SuperResolutionMode) {
+        superResolutionMode = mode
+        superResolutionApplyGeneration &+= 1
+        let generation = superResolutionApplyGeneration
+
+        guard mode.isEnabled else {
+            applySuperResolutionComposition(to: playerItem, mode: mode)
+            return
+        }
+
+        guard !preparedSuperResolutionModes.contains(mode) else {
+            applySuperResolutionComposition(to: playerItem, mode: mode)
+            return
+        }
+
+        prepareSuperResolutionModeInBackground(mode, generation: generation, applyAfterPrepare: playerItem != nil)
     }
 
     // MARK: - Observers
@@ -307,6 +334,158 @@ class AVPlayerController: ObservableObject {
         return nil
     }
 
+    // MARK: - Super Resolution
+
+    private func applySuperResolutionComposition(to item: AVPlayerItem?, mode: SuperResolutionMode) {
+        guard let item else { return }
+
+        superResolutionCompositionTask?.cancel()
+        superResolutionCompositionTask = nil
+
+        let rateBeforeChange = player?.rate ?? 0
+
+        guard mode.isEnabled else {
+            item.videoComposition = nil
+            restorePlaybackRateIfNeeded(rateBeforeChange)
+            return
+        }
+
+        let generation = superResolutionApplyGeneration
+        let asset = item.asset
+
+        superResolutionCompositionTask = Task { [weak self, weak item] in
+            let timing = await Self.loadVideoCompositionTrackTiming(for: asset)
+            guard !Task.isCancelled else { return }
+
+            let composition = AVMutableVideoComposition(
+                asset: asset
+            ) { request in
+                Anime4KSuperResolutionProcessor.process(request, mode: mode)
+            }
+            if let timing {
+                composition.sourceTrackIDForFrameTiming = timing.trackID
+            }
+            let preferredRenderSize = Anime4KSuperResolutionProcessor.preferredRenderSize(
+                from: composition.renderSize,
+                mode: mode
+            )
+
+            guard !Task.isCancelled,
+                  let self,
+                  let item,
+                  self.superResolutionApplyGeneration == generation,
+                  self.superResolutionMode == mode else {
+                return
+            }
+
+            guard Anime4KSuperResolutionProcessor.requiresVideoComposition(
+                from: composition.renderSize,
+                mode: mode
+            ) else {
+                item.videoComposition = nil
+                self.restorePlaybackRateIfNeeded(rateBeforeChange)
+                return
+            }
+
+            guard preferredRenderSize.width > 0, preferredRenderSize.height > 0 else {
+                item.videoComposition = AVVideoComposition(
+                    asset: asset
+                ) { request in
+                    Anime4KSuperResolutionProcessor.process(request, mode: mode)
+                }
+                self.restorePlaybackRateIfNeeded(rateBeforeChange)
+                return
+            }
+
+            composition.renderSize = preferredRenderSize
+            item.videoComposition = composition
+            self.restorePlaybackRateIfNeeded(rateBeforeChange)
+        }
+    }
+
+    private struct VideoCompositionTrackTiming {
+        let trackID: CMPersistentTrackID
+    }
+
+    private nonisolated static func loadVideoCompositionTrackTiming(for asset: AVAsset) async -> VideoCompositionTrackTiming? {
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let videoTrack = tracks.first else { return nil }
+
+            return VideoCompositionTrackTiming(
+                trackID: videoTrack.trackID
+            )
+        } catch {
+            print("AVPlayerController: failed to load video composition timing: \(error)")
+            return nil
+        }
+    }
+
+    private func prepareSuperResolutionModeInBackground(
+        _ mode: SuperResolutionMode,
+        generation: UInt64,
+        applyAfterPrepare: Bool
+    ) {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            Anime4KSuperResolutionProcessor.prepare(mode: mode)
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.preparedSuperResolutionModes.insert(mode)
+
+                guard applyAfterPrepare,
+                      self.superResolutionApplyGeneration == generation,
+                      self.superResolutionMode == mode else {
+                    return
+                }
+                self.applySuperResolutionComposition(to: self.playerItem, mode: mode)
+            }
+        }
+    }
+
+    private func restorePlaybackRateIfNeeded(_ rate: Float) {
+        guard rate > 0 else { return }
+        player?.playImmediately(atRate: rate)
+    }
+
+    // MARK: - Display Matching
+
+    private func applyPreferredDisplayCriteria(for asset: AVAsset) {
+        preferredDisplayCriteriaTask?.cancel()
+
+        preferredDisplayCriteriaTask = Task { [weak self] in
+            do {
+                let criteria = try await asset.load(.preferredDisplayCriteria)
+                guard !Task.isCancelled,
+                      let self,
+                      self.playerItem?.asset === asset else {
+                    return
+                }
+
+                Self.activeWindow()?.avDisplayManager.preferredDisplayCriteria = criteria
+            } catch {
+                guard !Task.isCancelled else { return }
+                print("AVPlayerController: failed to load preferred display criteria: \(error)")
+            }
+        }
+    }
+
+    private static func resetPreferredDisplayCriteria() {
+        activeWindow()?.avDisplayManager.preferredDisplayCriteria = nil
+    }
+
+    private static func activeWindow() -> UIWindow? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+
+        for scene in scenes {
+            if let keyWindow = scene.windows.first(where: { $0.isKeyWindow }) {
+                return keyWindow
+            }
+        }
+
+        return scenes.first?.windows.first
+    }
+
     // MARK: - End Handling
 
     private func handlePlaybackEnded() {
@@ -328,6 +507,10 @@ class AVPlayerController: ObservableObject {
             player?.removeTimeObserver(timeObserver)
         }
         timeObserver = nil
+        superResolutionCompositionTask?.cancel()
+        superResolutionCompositionTask = nil
+        preferredDisplayCriteriaTask?.cancel()
+        preferredDisplayCriteriaTask = nil
         cancellables.removeAll()
 
         player?.pause()
@@ -335,6 +518,7 @@ class AVPlayerController: ObservableObject {
         playerItem = nil
         pendingSeekTime = nil
         seekGeneration &+= 1
+        superResolutionApplyGeneration &+= 1
         initialSeekTime = nil
         didApplyInitialSeek = false
 
@@ -343,6 +527,8 @@ class AVPlayerController: ObservableObject {
         duration = 0
         isBuffering = false
         error = nil
+
+        Self.resetPreferredDisplayCriteria()
     }
 
     deinit {

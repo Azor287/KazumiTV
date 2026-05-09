@@ -23,6 +23,8 @@ final class SettingsRepository {
         case autoPlay = "autoPlay"
         case autoPlayNext = "autoPlayNext"
         case displayMode = "displayMode"
+        case defaultSuperResolutionType = "defaultSuperResolutionType"
+        case superResolutionWarn = "superResolutionWarn"
 
         // Danmaku
         case danmakuEnabledByDefault = "danmakuEnabledByDefault"
@@ -143,6 +145,29 @@ final class SettingsRepository {
         set { setBool(.autoPlayNext, newValue) }
     }
 
+    var defaultSuperResolutionMode: SuperResolutionMode {
+        get {
+            let rawValue = getInt(
+                .defaultSuperResolutionType,
+                defaultValue: SuperResolutionMode.off.rawValue
+            )
+            return SuperResolutionMode(rawValue: rawValue) ?? (rawValue == 4 ? .quality : .off)
+        }
+        set {
+            setInt(.defaultSuperResolutionType, newValue.rawValue)
+        }
+    }
+
+    var superResolutionQualityWarningHidden: Bool {
+        get { superResolutionPerformanceWarningHidden }
+        set { superResolutionPerformanceWarningHidden = newValue }
+    }
+
+    var superResolutionPerformanceWarningHidden: Bool {
+        get { getBool(.superResolutionWarn, defaultValue: false) }
+        set { setBool(.superResolutionWarn, newValue) }
+    }
+
     var danmakuEnabledByDefault: Bool {
         get { getBool(.danmakuEnabledByDefault, defaultValue: true) }
         set { setBool(.danmakuEnabledByDefault, newValue) }
@@ -219,6 +244,8 @@ final class SettingsRepository {
             .playResume,
             .autoPlay,
             .autoPlayNext,
+            .defaultSuperResolutionType,
+            .superResolutionWarn,
             .danmakuEnabledByDefault,
             .danmakuOpacity,
             .danmakuFontSize,

@@ -26,6 +26,7 @@ class PlayerViewModel: ObservableObject {
     @Published var danmakuShowTop = true
     @Published var danmakuShowScroll = true
     @Published var danmakuShowBottom = true
+    @Published var superResolutionMode: SuperResolutionMode = .off
 
     // Player state
     @Published var showControls = true
@@ -64,6 +65,7 @@ class PlayerViewModel: ObservableObject {
         danmakuShowTop = settings.danmakuTop
         danmakuShowScroll = settings.danmakuScroll
         danmakuShowBottom = settings.danmakuBottom
+        superResolutionMode = settings.defaultSuperResolutionMode
     }
 
     private func setupBindings() {
@@ -110,6 +112,7 @@ class PlayerViewModel: ObservableObject {
         self.danmakuItems = danmakuItems
         selectedSourceIndex = 0
 
+        playerController.setSuperResolutionMode(superResolutionMode)
         playerController.loadVideo(source: source, resumePosition: resumePosition)
         play()
     }
@@ -270,6 +273,11 @@ class PlayerViewModel: ObservableObject {
         playerController.setVolume(volume)
     }
 
+    func setSuperResolutionMode(_ mode: SuperResolutionMode) {
+        superResolutionMode = mode
+        playerController.setSuperResolutionMode(mode)
+    }
+
     // MARK: - Controls Visibility
 
     func toggleControls() {
@@ -294,6 +302,7 @@ class PlayerViewModel: ObservableObject {
         selectedSourceIndex = index
 
         let source = availableSources[index]
+        playerController.setSuperResolutionMode(superResolutionMode)
         playerController.loadVideo(source: source)
     }
 

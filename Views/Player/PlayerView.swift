@@ -39,6 +39,8 @@ struct PlayerView: View {
     @State private var pendingResumeEpisodeNumber: Int?
     @State private var failedPlaybackRoadKeys = Set<String>()
     @State private var failedPlaybackSourceKeys = Set<String>()
+    @State private var pendingSuperResolutionMode: SuperResolutionMode?
+    @State private var showSuperResolutionPerformanceAlert = false
     private let directionalSeekStep: TimeInterval = 5
     private let directionalSeekCommitDelay: UInt64 = 80_000_000
 
@@ -109,9 +111,21 @@ struct PlayerView: View {
 
     private var shouldEnableRemoteScrub: Bool {
         shouldShowControls &&
+        focusedControl == .progress &&
         !showingPlaylist &&
         viewModel.duration > 0 &&
         viewModel.playerController.player != nil
+    }
+
+    private var superResolutionPerformanceWarningMessage: String {
+        switch pendingSuperResolutionMode {
+        case .some(.quality):
+            return "1440p M/S 权重超分会启用 Anime4K Restore/Upscale CNN M/S，真机可能卡顿或掉帧。建议优先对低分辨率片源使用。"
+        case .some(.efficiency):
+            return "1440p 轻量增强会启用高光压制、降噪锐化与 Lanczos 缩放，真机可能卡顿。建议优先对低分辨率片源使用。"
+        case .some(.off), nil:
+            return "超分辨率会提高 GPU 占用，真机可能卡顿。建议优先对低分辨率片源使用。"
+        }
     }
 
     var body: some View {
@@ -245,6 +259,20 @@ struct PlayerView: View {
             playbackStartupTask?.cancel()
             viewModel.cleanup()
         }
+        .alert("超分性能提示", isPresented: $showSuperResolutionPerformanceAlert) {
+            Button("取消", role: .cancel) {
+                pendingSuperResolutionMode = nil
+            }
+            Button("继续") {
+                applyPendingSuperResolutionMode()
+            }
+            Button("不再提示并继续") {
+                SettingsRepository.shared.superResolutionPerformanceWarningHidden = true
+                applyPendingSuperResolutionMode()
+            }
+        } message: {
+            Text(superResolutionPerformanceWarningMessage)
+        }
     }
 
     private var controlsOverlay: some View {
@@ -321,6 +349,15 @@ struct PlayerView: View {
                                 await playAdjacentEpisode(1)
                             }
                         }
+                    }
+
+                    playerControlButton(
+                        control: .superResolution,
+                        icon: "sparkles",
+                        title: viewModel.superResolutionMode.playerTitle,
+                        size: 24
+                    ) {
+                        requestNextSuperResolutionMode()
                     }
 
                     Spacer(minLength: 36)
@@ -590,6 +627,9 @@ struct PlayerView: View {
                 await playAdjacentEpisode(1)
             }
 
+        case .superResolution:
+            requestNextSuperResolutionMode()
+
         case .playlist:
             openPlaylist()
 
@@ -743,6 +783,7 @@ struct PlayerView: View {
         if hasPlaylist {
             controls.append(.nextEpisode)
         }
+        controls.append(.superResolution)
         if activePlaybackSession != nil {
             controls.append(.playlist)
         }
@@ -766,6 +807,29 @@ struct PlayerView: View {
 
     private func togglePlayPauseFromControls() {
         viewModel.togglePlayPause()
+        showControls(autoHide: false)
+    }
+
+    private func requestNextSuperResolutionMode() {
+        let nextMode = viewModel.superResolutionMode.cycledForward
+        if nextMode.requiresPerformanceWarning &&
+            !SettingsRepository.shared.superResolutionPerformanceWarningHidden {
+            pendingSuperResolutionMode = nextMode
+            showSuperResolutionPerformanceAlert = true
+            return
+        }
+
+        applySuperResolutionMode(nextMode)
+    }
+
+    private func applyPendingSuperResolutionMode() {
+        guard let pendingSuperResolutionMode else { return }
+        applySuperResolutionMode(pendingSuperResolutionMode)
+        self.pendingSuperResolutionMode = nil
+    }
+
+    private func applySuperResolutionMode(_ mode: SuperResolutionMode) {
+        viewModel.setSuperResolutionMode(mode)
         showControls(autoHide: false)
     }
 
@@ -1371,6 +1435,7 @@ private enum PlayerControl: Hashable {
     case progress
     case playlist
     case nextEpisode
+    case superResolution
 }
 
 private struct PlaybackHistorySourceInfo {
@@ -1565,6 +1630,10 @@ struct VideoPlayerLayer: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         uiView.player = player
     }
+
+    static func dismantleUIView(_ uiView: PlayerUIView, coordinator: ()) {
+        uiView.cleanup()
+    }
 }
 
 class PlayerUIView: UIView {
@@ -1587,6 +1656,10 @@ class PlayerUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer.frame = bounds
+    }
+
+    func cleanup() {
+        playerLayer.player = nil
     }
 }
 

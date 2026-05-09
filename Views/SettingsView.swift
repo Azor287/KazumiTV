@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var playResume: Bool = SettingsRepository.shared.playResume
     @State private var autoPlay: Bool = SettingsRepository.shared.autoPlay
     @State private var autoPlayNext: Bool = SettingsRepository.shared.autoPlayNext
+    @State private var defaultSuperResolutionMode: SuperResolutionMode = SettingsRepository.shared.defaultSuperResolutionMode
+    @State private var superResolutionPerformanceWarningEnabled: Bool = !SettingsRepository.shared.superResolutionPerformanceWarningHidden
     @State private var danmakuEnabled: Bool = SettingsRepository.shared.danmakuEnabledByDefault
     @State private var danmakuOpacity: Double = SettingsRepository.shared.danmakuOpacity
     @State private var danmakuFontSize: Double = SettingsRepository.shared.danmakuFontSize
@@ -120,7 +122,7 @@ struct SettingsView: View {
                 resetSettings()
             }
         } message: {
-            Text("播放、弹幕、隐身和服务器代理设置会恢复为默认值。")
+            Text("播放、超分辨率、弹幕、隐身和服务器代理设置会恢复为默认值。")
         }
     }
 
@@ -275,6 +277,38 @@ struct SettingsView: View {
 
             settingsDivider
 
+            stepperRow(
+                title: "默认超分辨率",
+                subtitle: defaultSuperResolutionMode.settingsDescription,
+                icon: "sparkles",
+                valueText: defaultSuperResolutionMode.title,
+                canDecrease: defaultSuperResolutionMode.previous != nil,
+                canIncrease: defaultSuperResolutionMode.next != nil,
+                decrease: {
+                    guard let previous = defaultSuperResolutionMode.previous else { return }
+                    defaultSuperResolutionMode = previous
+                    SettingsRepository.shared.defaultSuperResolutionMode = previous
+                },
+                increase: {
+                    guard let next = defaultSuperResolutionMode.next else { return }
+                    defaultSuperResolutionMode = next
+                    SettingsRepository.shared.defaultSuperResolutionMode = next
+                }
+            )
+
+            settingsDivider
+
+            toggleRow(
+                title: "超分性能提示",
+                subtitle: "首次切到轻量增强或 M/S 权重超分时提醒可能卡顿",
+                icon: "exclamationmark.triangle",
+                isOn: $superResolutionPerformanceWarningEnabled
+            ) { newValue in
+                SettingsRepository.shared.superResolutionPerformanceWarningHidden = !newValue
+            }
+
+            settingsDivider
+
             toggleRow(
                 title: "隐身模式",
                 subtitle: "开启后不写入观看历史",
@@ -408,7 +442,7 @@ struct SettingsView: View {
 
             actionRow(
                 title: "恢复默认设置",
-                subtitle: "还原播放、弹幕、代理和隐身设置",
+                subtitle: "还原播放、超分辨率、弹幕、代理和隐身设置",
                 icon: "arrow.counterclockwise",
                 isBusy: false,
                 isDestructive: true
@@ -729,6 +763,8 @@ struct SettingsView: View {
         playResume = SettingsRepository.shared.playResume
         autoPlay = SettingsRepository.shared.autoPlay
         autoPlayNext = SettingsRepository.shared.autoPlayNext
+        defaultSuperResolutionMode = SettingsRepository.shared.defaultSuperResolutionMode
+        superResolutionPerformanceWarningEnabled = !SettingsRepository.shared.superResolutionPerformanceWarningHidden
         danmakuEnabled = SettingsRepository.shared.danmakuEnabledByDefault
         danmakuOpacity = SettingsRepository.shared.danmakuOpacity
         danmakuFontSize = SettingsRepository.shared.danmakuFontSize

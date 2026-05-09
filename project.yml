@@ -46,6 +46,7 @@ targets:
         DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "3"
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -DCI_SILENCE_GL_DEPRECATION"
     dependencies:
       - package: Fuzi
       - package: SQLite
