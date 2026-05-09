@@ -26,6 +26,7 @@ class AVPlayerController: ObservableObject {
     private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
     private var pendingSeekTime: TimeInterval?
+    private var seekGeneration: UInt64 = 0
     private var initialSeekTime: TimeInterval?
     private var didApplyInitialSeek = false
 
@@ -102,19 +103,24 @@ class AVPlayerController: ObservableObject {
         }
     }
 
-    func seek(to time: TimeInterval) {
+    func seek(to time: TimeInterval, tolerance: TimeInterval = 0.5) {
         let upperBound = duration > 0 ? duration : time
         let targetTime = max(0, min(time, upperBound))
+        seekGeneration &+= 1
+        let currentSeekGeneration = seekGeneration
         pendingSeekTime = targetTime
         currentTime = targetTime
 
         let cmTime = CMTime(seconds: targetTime, preferredTimescale: 600)
-        player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-            guard finished else { return }
+        let toleranceTime = CMTime(seconds: max(0, tolerance), preferredTimescale: 600)
+        playerItem?.cancelPendingSeeks()
+        player?.seek(to: cmTime, toleranceBefore: toleranceTime, toleranceAfter: toleranceTime) { [weak self] finished in
             Task { @MainActor in
-                if let pending = self?.pendingSeekTime, abs(pending - targetTime) < 0.1 {
-                    self?.pendingSeekTime = nil
+                guard self?.seekGeneration == currentSeekGeneration else { return }
+                if finished {
+                    self?.currentTime = targetTime
                 }
+                self?.pendingSeekTime = nil
             }
         }
     }
@@ -192,7 +198,6 @@ class AVPlayerController: ObservableObject {
                 case .paused:
                     self?.isPlaying = false
                 case .waitingToPlayAtSpecifiedRate:
-                    self?.isPlaying = false
                     self?.isBuffering = true
                 @unknown default:
                     self?.isPlaying = false
@@ -329,6 +334,7 @@ class AVPlayerController: ObservableObject {
         player = nil
         playerItem = nil
         pendingSeekTime = nil
+        seekGeneration &+= 1
         initialSeekTime = nil
         didApplyInitialSeek = false
 

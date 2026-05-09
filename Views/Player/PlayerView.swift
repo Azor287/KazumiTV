@@ -24,7 +24,10 @@ struct PlayerView: View {
     @State private var hideControlsTask: Task<Void, Never>?
     @State private var seekFeedback: SeekFeedback?
     @State private var seekFeedbackTask: Task<Void, Never>?
+    @State private var directionalSeekCommitTask: Task<Void, Never>?
+    @State private var committedSeekDisplayTask: Task<Void, Never>?
     @State private var scrubPreviewTime: TimeInterval?
+    @State private var committedSeekDisplayTime: TimeInterval?
     @State private var lastControlMoveAt = Date.distantPast
     @State private var playlistFocus: PlaylistFocus?
     @State private var recordedPlaybackSuccess = false
@@ -36,6 +39,8 @@ struct PlayerView: View {
     @State private var pendingResumeEpisodeNumber: Int?
     @State private var failedPlaybackRoadKeys = Set<String>()
     @State private var failedPlaybackSourceKeys = Set<String>()
+    private let directionalSeekStep: TimeInterval = 5
+    private let directionalSeekCommitDelay: UInt64 = 80_000_000
 
     init(bangumi: Bangumi, episode: Episode, playbackSession: PlaybackSession? = nil) {
         self.bangumi = bangumi
@@ -85,18 +90,21 @@ struct PlayerView: View {
     private var shouldShowControls: Bool {
         viewModel.showControls &&
         viewModel.error == nil &&
-        viewModel.playerController.player != nil &&
-        !viewModel.isBuffering
+        viewModel.playerController.player != nil
     }
 
     private var progress: Double {
         guard viewModel.duration > 0 else { return 0 }
-        let displayTime = scrubPreviewTime ?? viewModel.currentTime
+        let displayTime = playerDisplayTime
         return min(max(displayTime / viewModel.duration, 0), 1)
     }
 
     private var displayedCurrentTimeText: String {
-        formatPlayerTime(scrubPreviewTime ?? viewModel.currentTime)
+        formatPlayerTime(playerDisplayTime)
+    }
+
+    private var playerDisplayTime: TimeInterval {
+        scrubPreviewTime ?? committedSeekDisplayTime ?? viewModel.currentTime
     }
 
     private var shouldEnableRemoteScrub: Bool {
@@ -191,16 +199,21 @@ struct PlayerView: View {
             if isPlaying {
                 recordPlaybackSuccessIfNeeded()
                 scheduleControlsAutoHide()
-            } else {
+            } else if !viewModel.isBuffering {
                 showControls(autoHide: false)
             }
         }
         .onChange(of: viewModel.isBuffering) { _, isBuffering in
-            if !isBuffering && viewModel.error == nil {
-                showControls()
+            if !isBuffering && viewModel.error == nil && viewModel.showControls {
+                scheduleControlsAutoHide()
             }
         }
+        .onChange(of: viewModel.duration) { _, _ in
+            guard viewModel.showControls, focusedControl == nil, viewModel.error == nil else { return }
+            focusedControl = defaultFocusedControl
+        }
         .onChange(of: viewModel.currentTime) { _, currentTime in
+            clearCommittedSeekDisplayIfReached(currentTime)
             savePlaybackProgressIfNeeded(currentTime: currentTime)
         }
         .onChange(of: viewModel.error != nil) { _, hasError in
@@ -227,6 +240,8 @@ struct PlayerView: View {
             episodeLoadTask?.cancel()
             hideControlsTask?.cancel()
             seekFeedbackTask?.cancel()
+            cancelDirectionalSeekPreview()
+            clearCommittedSeekDisplay()
             playbackStartupTask?.cancel()
             viewModel.cleanup()
         }
@@ -249,26 +264,26 @@ struct PlayerView: View {
 
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(bangumi.displayName)
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+                    HStack(spacing: 12) {
+                        Text(bangumi.displayName)
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+
+                        Image(systemName: "pause.fill")
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(.white.opacity(0.82))
+                            .opacity(viewModel.isPlaying ? 0 : 1)
+                            .accessibilityHidden(viewModel.isPlaying)
+
+                        Spacer(minLength: 0)
+                    }
 
                     Text(activeEpisode.displayName)
                         .font(.headline)
                         .foregroundColor(.white.opacity(0.72))
                         .lineLimit(1)
-
-                    if !viewModel.isPlaying {
-                        HStack(spacing: 8) {
-                            Image(systemName: "pause.fill")
-                                .font(.caption.weight(.bold))
-                            Text("已暂停")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .foregroundColor(.white.opacity(0.82))
-                    }
                 }
 
                 HStack(alignment: .center, spacing: 18) {
@@ -280,10 +295,17 @@ struct PlayerView: View {
 
                     PlayerProgressBar(
                         progress: progress,
-                        isScrubbing: scrubPreviewTime != nil
+                        isScrubbing: scrubPreviewTime != nil,
+                        isFocused: focusedControl == .progress
                     )
-                    .frame(height: 26)
+                    .frame(height: 34)
                     .layoutPriority(1)
+                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .accessibilityLabel("播放进度")
+                    .accessibilityValue("\(displayedCurrentTimeText) / \(viewModel.durationText)")
+                    .onMoveCommand { direction in
+                        handleControlMoveCommand(direction)
+                    }
 
                     playerTimeText(
                         viewModel.durationText,
@@ -361,7 +383,7 @@ struct PlayerView: View {
             isPrimary: isPrimary
         ))
         .onMoveCommand { direction in
-            moveControlFocus(direction)
+            handleControlMoveCommand(direction)
         }
     }
 
@@ -501,8 +523,7 @@ struct PlayerView: View {
         }
 
         if viewModel.showControls {
-            moveControlFocus(direction)
-            scheduleControlsAutoHide()
+            handleControlMoveCommand(direction)
             return
         }
 
@@ -561,6 +582,9 @@ struct PlayerView: View {
 
     private func performFocusedControl() {
         switch focusedControl {
+        case .progress:
+            togglePlayPauseFromControls()
+
         case .nextEpisode:
             startPlaybackTask {
                 await playAdjacentEpisode(1)
@@ -590,6 +614,24 @@ struct PlayerView: View {
         }
     }
 
+    private func handleControlMoveCommand(_ direction: MoveCommandDirection) {
+        if focusedControl == .progress {
+            switch direction {
+            case .left:
+                seekBackward()
+                return
+            case .right:
+                seekForward()
+                return
+            default:
+                break
+            }
+        }
+
+        moveControlFocus(direction)
+        scheduleControlsAutoHide()
+    }
+
     private func moveControlFocus(_ direction: MoveCommandDirection) {
         let now = Date()
         guard now.timeIntervalSince(lastControlMoveAt) > 0.08 else { return }
@@ -597,26 +639,33 @@ struct PlayerView: View {
 
         let bottomControls = availableBottomControls
 
-        guard !bottomControls.isEmpty else {
-            focusedControl = nil
+        guard let currentFocus = focusedControl else {
+            focusedControl = defaultFocusedControl
             return
         }
 
-        guard let currentFocus = focusedControl,
-              let currentIndex = bottomControls.firstIndex(of: currentFocus) else {
+        if currentFocus == .progress {
+            guard direction == .down, let firstBottomControl = bottomControls.first else { return }
+            focusedControl = firstBottomControl
+            return
+        }
+
+        guard let currentIndex = bottomControls.firstIndex(of: currentFocus) else {
             focusedControl = defaultFocusedControl
             return
         }
 
         switch direction {
         case .left:
-            guard currentIndex > 0 else { return }
-            focusedControl = bottomControls[currentIndex - 1]
-
+            if currentIndex > 0 {
+                focusedControl = bottomControls[currentIndex - 1]
+            }
         case .right:
-            guard currentIndex < bottomControls.count - 1 else { return }
-            focusedControl = bottomControls[currentIndex + 1]
-
+            if currentIndex < bottomControls.count - 1 {
+                focusedControl = bottomControls[currentIndex + 1]
+            }
+        case .up:
+            focusedControl = .progress
         default:
             break
         }
@@ -700,8 +749,12 @@ struct PlayerView: View {
         return controls
     }
 
+    private var availableControls: [PlayerControl] {
+        [.progress] + availableBottomControls
+    }
+
     private var defaultFocusedControl: PlayerControl? {
-        return availableBottomControls.first
+        .progress
     }
 
     private func startPlaybackTask(_ operation: @escaping @MainActor () async -> Void) {
@@ -713,7 +766,7 @@ struct PlayerView: View {
 
     private func togglePlayPauseFromControls() {
         viewModel.togglePlayPause()
-        showControls(autoHide: viewModel.isPlaying)
+        showControls(autoHide: false)
     }
 
     private func loadActiveEpisode() async {
@@ -757,9 +810,10 @@ struct PlayerView: View {
         }
 
         seekFeedbackTask?.cancel()
+        cancelDirectionalSeekPreview()
+        clearCommittedSeekDisplay()
         playbackStartupTask?.cancel()
         seekFeedback = nil
-        scrubPreviewTime = nil
         pendingResumePosition = nil
         pendingResumeEpisodeNumber = nil
         savePlaybackProgressIfNeeded(force: true)
@@ -856,6 +910,8 @@ struct PlayerView: View {
         activeEpisode = nextEpisode
         recordedPlaybackSuccess = false
         recordedPlaybackFailure = false
+        cancelDirectionalSeekPreview()
+        clearCommittedSeekDisplay()
         viewModel.cleanup()
         showControls(autoHide: false)
         await loadActiveEpisode()
@@ -922,6 +978,8 @@ struct PlayerView: View {
                 activeEpisode = nextEpisode
                 recordedPlaybackSuccess = false
                 recordedPlaybackFailure = false
+                cancelDirectionalSeekPreview()
+                clearCommittedSeekDisplay()
                 viewModel.cleanup()
                 showControls(autoHide: false)
                 await loadActiveEpisode()
@@ -1155,16 +1213,78 @@ struct PlayerView: View {
     }
 
     private func seekBackward() {
-        viewModel.seekBackward()
-        showSeekFeedback(.backward)
+        adjustDirectionalSeek(by: -directionalSeekStep, feedback: .backward)
     }
 
     private func seekForward() {
-        viewModel.seekForward()
-        showSeekFeedback(.forward)
+        adjustDirectionalSeek(by: directionalSeekStep, feedback: .forward)
+    }
+
+    private func adjustDirectionalSeek(by delta: TimeInterval, feedback: SeekFeedback) {
+        if viewModel.duration <= 0 {
+            delta < 0 ? viewModel.seekBackward() : viewModel.seekForward()
+            showSeekFeedback(feedback)
+            return
+        }
+
+        cancelControlsAutoHide()
+        let baseTime = scrubPreviewTime ?? committedSeekDisplayTime ?? viewModel.currentTime
+        let targetTime = min(max(baseTime + delta, 0), viewModel.duration)
+        scrubPreviewTime = targetTime
+        committedSeekDisplayTime = nil
+        showSeekFeedback(feedback)
+
+        directionalSeekCommitTask?.cancel()
+        directionalSeekCommitTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: directionalSeekCommitDelay)
+            guard !Task.isCancelled else { return }
+            commitDirectionalSeek(scrubPreviewTime ?? targetTime)
+        }
+    }
+
+    private func commitDirectionalSeek(_ targetTime: TimeInterval) {
+        viewModel.seek(to: targetTime)
+        holdCommittedSeekDisplay(targetTime)
+        scrubPreviewTime = nil
+        directionalSeekCommitTask = nil
+
+        if viewModel.showControls {
+            showControls(focus: focusedControl, autoHide: viewModel.isPlaying)
+        }
+    }
+
+    private func cancelDirectionalSeekPreview() {
+        directionalSeekCommitTask?.cancel()
+        directionalSeekCommitTask = nil
+        scrubPreviewTime = nil
+    }
+
+    private func holdCommittedSeekDisplay(_ targetTime: TimeInterval) {
+        committedSeekDisplayTask?.cancel()
+        committedSeekDisplayTime = targetTime
+        committedSeekDisplayTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled else { return }
+            clearCommittedSeekDisplay()
+        }
+    }
+
+    private func clearCommittedSeekDisplayIfReached(_ currentTime: TimeInterval) {
+        guard let committedSeekDisplayTime else { return }
+        if abs(currentTime - committedSeekDisplayTime) <= 0.75 {
+            clearCommittedSeekDisplay()
+        }
+    }
+
+    private func clearCommittedSeekDisplay() {
+        committedSeekDisplayTask?.cancel()
+        committedSeekDisplayTask = nil
+        committedSeekDisplayTime = nil
     }
 
     private func beginRemoteScrub(_ targetTime: TimeInterval) {
+        directionalSeekCommitTask?.cancel()
+        clearCommittedSeekDisplay()
         cancelControlsAutoHide()
         scrubPreviewTime = targetTime
     }
@@ -1174,16 +1294,18 @@ struct PlayerView: View {
     }
 
     private func commitRemoteScrub(_ targetTime: TimeInterval) {
-        scrubPreviewTime = nil
+        directionalSeekCommitTask?.cancel()
         viewModel.seek(to: targetTime)
+        holdCommittedSeekDisplay(targetTime)
+        scrubPreviewTime = nil
         showControls(autoHide: viewModel.isPlaying)
     }
 
     private func showControls(focus: PlayerControl? = nil, autoHide: Bool = true) {
         viewModel.showControls = true
-        if let focus, availableBottomControls.contains(focus) {
+        if let focus, availableControls.contains(focus) {
             focusedControl = focus
-        } else if focusedControl.map({ !availableBottomControls.contains($0) }) ?? true {
+        } else if focusedControl.map({ !availableControls.contains($0) }) ?? true {
             focusedControl = defaultFocusedControl
         }
 
@@ -1246,6 +1368,7 @@ struct PlayerView: View {
 }
 
 private enum PlayerControl: Hashable {
+    case progress
     case playlist
     case nextEpisode
 }
@@ -1378,6 +1501,7 @@ private struct PlayerTransportButtonStyle: ButtonStyle {
 private struct PlayerProgressBar: View {
     let progress: Double
     let isScrubbing: Bool
+    let isFocused: Bool
 
     private var clampedProgress: Double {
         min(max(progress, 0), 1)
@@ -1388,30 +1512,40 @@ private struct PlayerProgressBar: View {
             let width = proxy.size.width
             let centerY = proxy.size.height / 2
             let knobX = clampedProgress * width
+            let trackHeight: CGFloat = isFocused ? 8 : 6
+            let knobSize: CGFloat = isScrubbing ? 24 : (isFocused ? 20 : 14)
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.kzTextSecondary.opacity(0.28))
-                    .frame(height: 6)
+                    .fill(Color.white.opacity(isFocused ? 0.16 : 0))
+                    .frame(height: isFocused ? 14 : 0)
+                    .position(x: width / 2, y: centerY)
+
+                Capsule()
+                    .fill(Color.kzTextSecondary.opacity(isFocused ? 0.36 : 0.28))
+                    .frame(height: trackHeight)
                     .position(x: width / 2, y: centerY)
 
                 Capsule()
                     .fill(Color.kzPrimary)
-                    .frame(width: max(0, knobX), height: 6)
+                    .frame(width: max(0, knobX), height: trackHeight)
                     .position(x: max(0, knobX) / 2, y: centerY)
 
                 Circle()
                     .fill(Color.kzPrimary)
-                    .frame(width: isScrubbing ? 22 : 14, height: isScrubbing ? 22 : 14)
+                    .frame(width: knobSize, height: knobSize)
                     .overlay {
-                        if isScrubbing {
+                        if isScrubbing || isFocused {
                             Circle()
                                 .stroke(Color.kzOnPrimaryContainer.opacity(0.92), lineWidth: 3)
                         }
                     }
-                    .shadow(color: Color.kzPrimary.opacity(isScrubbing ? 0.64 : 0.24), radius: isScrubbing ? 16 : 6)
+                    .shadow(
+                        color: Color.kzPrimary.opacity((isScrubbing || isFocused) ? 0.64 : 0.24),
+                        radius: (isScrubbing || isFocused) ? 16 : 6
+                    )
                     .position(x: min(max(knobX, 0), width), y: centerY)
-                    .animation(.easeOut(duration: 0.12), value: isScrubbing)
+                    .animation(.easeOut(duration: 0.12), value: isScrubbing || isFocused)
                     .animation(.linear(duration: 0.08), value: clampedProgress)
             }
         }
@@ -1591,7 +1725,7 @@ private struct RemoteScrubGestureLayer: UIViewRepresentable {
 
                 guard abs(filteredAccumulatedAngle) >= 0.16 || hasStartedScrubbing else { return }
 
-                let secondsPerRotation = min(max(duration / 20, 45), 120)
+                let secondsPerRotation = min(max(duration / 20, 45), 120) * 1.4
                 let deltaSeconds = TimeInterval(filteredAccumulatedAngle / (2 * CGFloat.pi)) * secondsPerRotation
                 targetTime = max(0, min(duration, baseTime + deltaSeconds))
 
