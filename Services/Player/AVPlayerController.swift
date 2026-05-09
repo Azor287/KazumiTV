@@ -27,6 +27,8 @@ class AVPlayerController: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var pendingSeekTime: TimeInterval?
     private var seekGeneration: UInt64 = 0
+    private var resumeGeneration: UInt64 = 0
+    private var shouldResumePlaybackAfterSeek = false
     private var initialSeekTime: TimeInterval?
     private var didApplyInitialSeek = false
 
@@ -86,16 +88,29 @@ class AVPlayerController: ObservableObject {
     // MARK: - Playback Controls
 
     func play() {
+        guard pendingSeekTime == nil else {
+            shouldResumePlaybackAfterSeek = true
+            isBuffering = true
+            return
+        }
+
         player?.play()
         player?.rate = playbackRate
     }
 
     func pause() {
+        shouldResumePlaybackAfterSeek = false
+        cancelPendingResume()
         player?.pause()
         isPlaying = false
     }
 
     func togglePlayPause() {
+        if pendingSeekTime != nil {
+            shouldResumePlaybackAfterSeek ? pause() : play()
+            return
+        }
+
         if isPlaying {
             pause()
         } else {
@@ -103,9 +118,14 @@ class AVPlayerController: ObservableObject {
         }
     }
 
+    func beginInteractiveSeek() {
+        _ = prepareForSeek()
+    }
+
     func seek(to time: TimeInterval, tolerance: TimeInterval = 0.5) {
         let upperBound = duration > 0 ? duration : time
         let targetTime = max(0, min(time, upperBound))
+        let shouldResumePlayback = prepareForSeek()
         seekGeneration &+= 1
         let currentSeekGeneration = seekGeneration
         pendingSeekTime = targetTime
@@ -116,11 +136,17 @@ class AVPlayerController: ObservableObject {
         playerItem?.cancelPendingSeeks()
         player?.seek(to: cmTime, toleranceBefore: toleranceTime, toleranceAfter: toleranceTime) { [weak self] finished in
             Task { @MainActor in
-                guard self?.seekGeneration == currentSeekGeneration else { return }
+                guard let self, self.seekGeneration == currentSeekGeneration else { return }
                 if finished {
-                    self?.currentTime = targetTime
+                    self.currentTime = targetTime
                 }
-                self?.pendingSeekTime = nil
+                self.pendingSeekTime = nil
+
+                if finished, shouldResumePlayback, self.shouldResumePlaybackAfterSeek {
+                    self.resumePlaybackWhenReady(for: currentSeekGeneration)
+                } else if !self.shouldResumePlaybackAfterSeek {
+                    self.isBuffering = self.playerItem?.isPlaybackBufferEmpty ?? false
+                }
             }
         }
     }
@@ -148,6 +174,80 @@ class AVPlayerController: ObservableObject {
     func setVolume(_ volume: Float) {
         self.volume = max(0, min(1, volume))
         player?.volume = self.volume
+    }
+
+    private var isPlaybackActive: Bool {
+        isPlaying ||
+        player?.timeControlStatus == .playing ||
+        player?.timeControlStatus == .waitingToPlayAtSpecifiedRate
+    }
+
+    private func prepareForSeek() -> Bool {
+        cancelPendingResume()
+
+        let shouldResumePlayback = shouldResumePlaybackAfterSeek || isPlaybackActive
+        shouldResumePlaybackAfterSeek = shouldResumePlayback
+
+        if shouldResumePlayback {
+            player?.pause()
+            isPlaying = false
+            isBuffering = true
+        }
+
+        return shouldResumePlayback
+    }
+
+    private func resumePlaybackWhenReady(for seekGeneration: UInt64) {
+        guard let player else {
+            shouldResumePlaybackAfterSeek = false
+            isBuffering = false
+            return
+        }
+
+        resumeGeneration &+= 1
+        let currentResumeGeneration = resumeGeneration
+        let targetRate = max(playbackRate, 0.1)
+
+        player.preroll(atRate: targetRate) { [weak self] finished in
+            Task { @MainActor in
+                guard let self,
+                      self.seekGeneration == seekGeneration,
+                      self.resumeGeneration == currentResumeGeneration,
+                      self.shouldResumePlaybackAfterSeek else {
+                    return
+                }
+
+                if finished || self.playerItem?.isPlaybackLikelyToKeepUp == true {
+                    self.resumePlaybackIfPending(
+                        seekGeneration: seekGeneration,
+                        resumeGeneration: currentResumeGeneration
+                    )
+                } else {
+                    self.isBuffering = true
+                }
+            }
+        }
+    }
+
+    private func resumePlaybackIfPending(
+        seekGeneration expectedSeekGeneration: UInt64? = nil,
+        resumeGeneration expectedResumeGeneration: UInt64? = nil
+    ) {
+        guard shouldResumePlaybackAfterSeek,
+              pendingSeekTime == nil,
+              expectedSeekGeneration.map({ $0 == seekGeneration }) ?? true,
+              expectedResumeGeneration.map({ $0 == resumeGeneration }) ?? true else {
+            return
+        }
+
+        shouldResumePlaybackAfterSeek = false
+        player?.play()
+        player?.rate = playbackRate
+    }
+
+    private func cancelPendingResume() {
+        resumeGeneration &+= 1
+        player?.cancelPendingPrerolls()
     }
 
     // MARK: - Observers
@@ -184,7 +284,19 @@ class AVPlayerController: ObservableObject {
         playerItem.publisher(for: \.isPlaybackBufferEmpty)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isEmpty in
+                guard self?.shouldResumePlaybackAfterSeek != true else {
+                    self?.isBuffering = true
+                    return
+                }
                 self?.isBuffering = isEmpty
+            }
+            .store(in: &cancellables)
+
+        playerItem.publisher(for: \.isPlaybackLikelyToKeepUp)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isLikelyToKeepUp in
+                guard isLikelyToKeepUp else { return }
+                self?.resumePlaybackIfPending()
             }
             .store(in: &cancellables)
 
@@ -330,6 +442,8 @@ class AVPlayerController: ObservableObject {
         timeObserver = nil
         cancellables.removeAll()
 
+        shouldResumePlaybackAfterSeek = false
+        cancelPendingResume()
         player?.pause()
         player = nil
         playerItem = nil
