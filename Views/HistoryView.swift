@@ -157,7 +157,7 @@ struct HistoryView: View {
                             } else {
                                 pendingFocusRestoreHistoryID = history.id
                                 focusedHistoryID = history.id
-                                play(history)
+                                openDetail(history)
                             }
                         } label: {
                             HistoryCardLabel(
@@ -169,6 +169,12 @@ struct HistoryView: View {
                         .buttonStyle(TVCardButtonStyle())
                         .focused($focusedHistoryID, equals: history.id)
                         .disabled(loadingHistoryID != nil && loadingHistoryID != history.id)
+                        .onPlayPauseCommand {
+                            guard !isEditing else { return }
+                            pendingFocusRestoreHistoryID = history.id
+                            focusedHistoryID = history.id
+                            play(history)
+                        }
                     }
                 }
                 .padding(.horizontal, sidePadding)
@@ -200,6 +206,12 @@ struct HistoryView: View {
             return 2
         }
         return 1
+    }
+
+    private func openDetail(_ history: History) {
+        guard loadingHistoryID == nil else { return }
+
+        router.navigate(to: .bangumiDetail(history.bangumi, history.searchItem))
     }
 
     private func play(_ history: History) {
@@ -376,7 +388,7 @@ private struct HistoryCardLabel: View {
                 .tint(.kzPrimary)
                 .frame(width: 42, height: 42)
         } else {
-            Image(systemName: isEditing ? "trash" : "play.fill")
+            Image(systemName: isEditing ? "trash" : "chevron.right")
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(isEditing ? Color.red.opacity(0.88) : Color.kzOnPrimaryContainer)
                 .frame(width: 46, height: 46)
