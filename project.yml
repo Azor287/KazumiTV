@@ -12,6 +12,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
+    DANDANPLAY_APP_ID: ""
+    DANDANPLAY_APP_SECRET: ""
 
 packages:
   Fuzi:
@@ -58,6 +60,8 @@ targets:
         CFBundleIdentifier: com.kazumi.tv
         CFBundleVersion: "1"
         CFBundleShortVersionString: "0.1.0"
+        DANDANPLAY_APP_ID: "$(DANDANPLAY_APP_ID)"
+        DANDANPLAY_APP_SECRET: "$(DANDANPLAY_APP_SECRET)"
         CFBundlePackageType: APPL
         CFBundleExecutable: KazumiTV
         UILaunchScreen:

@@ -20,6 +20,10 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>DANDANPLAY_APP_ID</key>
+	<string>$(DANDANPLAY_APP_ID)</string>
+	<key>DANDANPLAY_APP_SECRET</key>
+	<string>$(DANDANPLAY_APP_SECRET)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

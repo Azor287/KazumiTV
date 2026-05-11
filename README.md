@@ -53,6 +53,22 @@ xcodebuild -project KazumiTV.xcodeproj \
   build
 ```
 
+## 弹幕 API 配置
+
+KazumiTV 按原版 Kazumi 的方式调用 DanDanPlay API。DanDanPlay 请求需要应用 ID 与密钥签名，构建时可通过 `DANDANPLAY_APP_ID` 和 `DANDANPLAY_APP_SECRET` 注入：
+
+```bash
+xcodebuild -project KazumiTV.xcodeproj \
+  -scheme KazumiTV \
+  -configuration Debug \
+  -destination 'platform=tvOS Simulator,name=Apple TV 4K (3rd generation)' \
+  DANDANPLAY_APP_ID='<app-id>' \
+  DANDANPLAY_APP_SECRET='<app-secret>' \
+  build
+```
+
+请不要把真实 DanDanPlay 密钥提交到仓库。未配置凭据时，播放器会保留弹幕开关与渲染能力，但弹幕加载会显示未配置提示。
+
 ## 服务器代理
 
 代理服务器位于 `kazumi-server/`。

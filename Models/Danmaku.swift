@@ -54,49 +54,54 @@ enum DanmakuType: Int, Equatable, Hashable {
     case scroll = 1      // 滚动弹幕
     case top = 5         // 顶部固定弹幕
     case bottom = 4      // 底部固定弹幕
-
-    var rawValue: Int {
-        switch self {
-        case .scroll: return 1
-        case .top: return 5
-        case .bottom: return 4
-        }
-    }
-
-    init?(rawValue: Int) {
-        switch rawValue {
-        case 1: self = .scroll
-        case 4: self = .bottom
-        case 5: self = .top
-        default: self = .scroll
-        }
-    }
 }
 
 // MARK: - DanDanPlay API Response
-struct DanDanPlayResponse: Codable {
+struct DanDanPlayResponse: Decodable {
     let id: Int?
     let total: Int?
     let comments: [DanDanPlayComment]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case total
+        case comments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int.self, forKey: .id)
+        total = try container.decodeIfPresent(Int.self, forKey: .total)
+        comments = try container.decodeIfPresent([DanDanPlayComment].self, forKey: .comments) ?? []
+    }
 }
 
-struct DanDanPlayComment: Codable {
+struct DanDanPlayComment: Decodable {
     let p: String  // time,type,color,source
     let m: String  // message text
 
+    private var parts: [Substring] {
+        p.split(separator: ",", omittingEmptySubsequences: false)
+    }
+
     var time: TimeInterval {
-        let parts = p.split(separator: ",")
-        return Double(parts[0]) ?? 0
+        guard let value = parts.first else { return 0 }
+        return Double(value) ?? 0
     }
 
     var type: Int {
-        let parts = p.split(separator: ",")
-        return Int(parts[1]) ?? 1
+        guard parts.count > 1 else { return DanmakuType.scroll.rawValue }
+        return Int(parts[1]) ?? DanmakuType.scroll.rawValue
     }
 
     var color: Color {
-        let parts = p.split(separator: ",")
-        let colorValue = Int(parts[2]) ?? 0xFFFFFF
+        let colorValue: Int
+        if parts.count > 2 {
+            colorValue = Int(parts[2]) ?? 0xFFFFFF
+        } else {
+            colorValue = 0xFFFFFF
+        }
+
         return Color(
             red: Double((colorValue >> 16) & 0xFF) / 255.0,
             green: Double((colorValue >> 8) & 0xFF) / 255.0,
@@ -105,11 +110,50 @@ struct DanDanPlayComment: Codable {
     }
 
     var source: String {
-        let parts = p.split(separator: ",")
         return parts.count > 3 ? String(parts[3]) : ""
     }
 
     var text: String { m }
+}
+
+extension Array where Element == DanmakuItem {
+    func removingNearbyDuplicates(timeWindow: TimeInterval = 5) -> [DanmakuItem] {
+        var acceptedTimesByText: [String: [TimeInterval]] = [:]
+        var result: [DanmakuItem] = []
+
+        for item in sorted(by: { $0.time < $1.time }) {
+            let key = item.normalizedTextForDeduplication
+            let acceptedTimes = acceptedTimesByText[key] ?? []
+            let hasNearbyDuplicate = acceptedTimes.contains { abs($0 - item.time) <= timeWindow }
+
+            if hasNearbyDuplicate {
+                continue
+            }
+
+            result.append(item)
+            acceptedTimesByText[key, default: []].append(item.time)
+        }
+
+        return result
+    }
+}
+
+private extension DanmakuItem {
+    var normalizedTextForDeduplication: String {
+        let transformed = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+
+        let scalars = transformed.unicodeScalars.filter { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar) &&
+            !CharacterSet.punctuationCharacters.contains(scalar) &&
+            !CharacterSet.symbols.contains(scalar)
+        }
+
+        let normalized = String(String.UnicodeScalarView(scalars))
+        return normalized.isEmpty ? text : normalized
+    }
 }
 
 extension DanmakuItem {
