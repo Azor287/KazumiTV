@@ -173,6 +173,26 @@ final class SettingsRepository {
         set { setBool(.danmakuBottom, newValue) }
     }
 
+    var danmakuMassive: Bool {
+        get { getBool(.danmakuMassive, defaultValue: false) }
+        set { setBool(.danmakuMassive, newValue) }
+    }
+
+    var danmakuDeduplication: Bool {
+        get { getBool(.danmakuDeduplication, defaultValue: false) }
+        set { setBool(.danmakuDeduplication, newValue) }
+    }
+
+    var danmakuArea: Double {
+        get { getDouble(.danmakuArea, defaultValue: 1.0) }
+        set { setDouble(.danmakuArea, newValue) }
+    }
+
+    var danmakuDuration: Double {
+        get { getDouble(.danmakuDuration, defaultValue: 8.0) }
+        set { setDouble(.danmakuDuration, newValue) }
+    }
+
     var themeMode: Int {
         get { getInt(.themeMode, defaultValue: 0) }
         set { setInt(.themeMode, newValue) }
@@ -225,6 +245,10 @@ final class SettingsRepository {
             .danmakuTop,
             .danmakuScroll,
             .danmakuBottom,
+            .danmakuMassive,
+            .danmakuDeduplication,
+            .danmakuArea,
+            .danmakuDuration,
             .themeMode,
             .downloadParallelEpisodes,
             .downloadParallelSegments,

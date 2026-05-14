@@ -26,6 +26,11 @@ class PlayerViewModel: ObservableObject {
     @Published var danmakuShowTop = true
     @Published var danmakuShowScroll = true
     @Published var danmakuShowBottom = true
+    @Published var danmakuMassive = false
+    @Published var danmakuArea: Double = 1.0
+    @Published var danmakuDuration: TimeInterval = 8.0
+    @Published var danmakuLoading = false
+    @Published var danmakuStatusMessage: String?
 
     // Player state
     @Published var showControls = true
@@ -64,6 +69,9 @@ class PlayerViewModel: ObservableObject {
         danmakuShowTop = settings.danmakuTop
         danmakuShowScroll = settings.danmakuScroll
         danmakuShowBottom = settings.danmakuBottom
+        danmakuMassive = settings.danmakuMassive
+        danmakuArea = settings.danmakuArea
+        danmakuDuration = settings.danmakuDuration
     }
 
     private func setupBindings() {
@@ -95,6 +103,7 @@ class PlayerViewModel: ObservableObject {
         print("PlayerViewModel.loadVideo called for bangumi: \(bangumi.displayName), episode: \(episode.displayName)")
         currentBangumi = bangumi
         currentEpisode = episode
+        startDanmakuLoading(for: bangumi, episode: episode, generation: generation)
 
         // Always resolve video source, regardless of episode list
         await resolveVideoSource(for: episode, resumePosition: resumePosition, generation: generation)
@@ -102,12 +111,17 @@ class PlayerViewModel: ObservableObject {
 
     func loadVideo(source: VideoSource, danmakuItems: [DanmakuItem] = [], resumePosition: TimeInterval? = nil) {
         _ = beginLoadGeneration()
+        danmakuLoadingTask?.cancel()
+        danmakuLoading = false
+        danmakuStatusMessage = nil
         loadResolvedVideo(source: source, danmakuItems: danmakuItems, resumePosition: resumePosition)
     }
 
-    private func loadResolvedVideo(source: VideoSource, danmakuItems: [DanmakuItem] = [], resumePosition: TimeInterval? = nil) {
+    private func loadResolvedVideo(source: VideoSource, danmakuItems: [DanmakuItem]? = nil, resumePosition: TimeInterval? = nil) {
         currentSource = source
-        self.danmakuItems = danmakuItems
+        if let danmakuItems {
+            self.danmakuItems = danmakuItems
+        }
         selectedSourceIndex = 0
 
         playerController.loadVideo(source: source, resumePosition: resumePosition)
@@ -214,20 +228,86 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Danmaku Loading
 
     func loadDanmaku(bangumiId: Int, episodeNumber: Int) async {
+        startDanmakuLoading(
+            bangumiId: bangumiId,
+            episodeNumber: episodeNumber,
+            generation: loadGeneration
+        )
+    }
+
+    func reloadDanmakuForCurrentEpisode() {
+        guard let currentBangumi, let currentEpisode else { return }
+        startDanmakuLoading(for: currentBangumi, episode: currentEpisode, generation: loadGeneration)
+    }
+
+    private func startDanmakuLoading(for bangumi: Bangumi, episode: Episode, generation: UInt64) {
+        startDanmakuLoading(
+            bangumiId: bangumi.id,
+            episodeNumber: resolvedDanmakuEpisodeNumber(for: episode),
+            generation: generation
+        )
+    }
+
+    private func startDanmakuLoading(bangumiId: Int, episodeNumber: Int, generation: UInt64) {
         danmakuLoadingTask?.cancel()
+        danmakuItems = []
+        danmakuStatusMessage = nil
+
+        guard bangumiId > 0, episodeNumber > 0 else {
+            danmakuLoading = false
+            danmakuStatusMessage = "当前分集无法匹配弹幕"
+            return
+        }
+
+        danmakuLoading = true
+        let shouldDeduplicate = settings.danmakuDeduplication
+        let danmakuAPI = self.danmakuAPI
 
         danmakuLoadingTask = Task {
             do {
-                let items = try await danmakuAPI.getCommentsByBgmId(bgmBangumiId: bangumiId, episode: episodeNumber)
-                if !Task.isCancelled {
+                let loadedItems = try await danmakuAPI.getCommentsByBgmId(
+                    bgmBangumiId: bangumiId,
+                    episode: episodeNumber
+                )
+                let items = shouldDeduplicate
+                    ? loadedItems.removingNearbyDuplicates()
+                    : loadedItems.sorted { $0.time < $1.time }
+
+                await MainActor.run {
+                    guard self.isCurrentLoad(generation), !Task.isCancelled else { return }
                     self.danmakuItems = items
+                    self.danmakuLoading = false
+                    self.danmakuStatusMessage = items.isEmpty ? "未找到弹幕" : nil
                 }
             } catch {
-                if !Task.isCancelled {
+                await MainActor.run {
+                    guard self.isCurrentLoad(generation), !Task.isCancelled else { return }
+                    self.danmakuItems = []
+                    self.danmakuLoading = false
+                    self.danmakuStatusMessage = error.localizedDescription
                     print("Failed to load danmaku: \(error)")
                 }
             }
         }
+    }
+
+    private func resolvedDanmakuEpisodeNumber(for episode: Episode) -> Int {
+        if episode.episodeNumber > 0 {
+            return episode.episodeNumber
+        }
+
+        return extractEpisodeNumber(from: episode.displayName)
+    }
+
+    private func extractEpisodeNumber(from text: String) -> Int {
+        let pattern = #"第?\s*(\d+)\s*[话話集]?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else {
+            return 0
+        }
+
+        return Int(text[range]) ?? 0
     }
 
     // MARK: - Playback Controls
@@ -246,6 +326,15 @@ class PlayerViewModel: ObservableObject {
 
     func togglePlayPause() {
         playerController.togglePlayPause()
+    }
+
+    func toggleDanmaku() {
+        danmakuEnabled.toggle()
+        settings.danmakuEnabledByDefault = danmakuEnabled
+
+        if danmakuEnabled && danmakuItems.isEmpty && !danmakuLoading {
+            reloadDanmakuForCurrentEpisode()
+        }
     }
 
     func beginInteractiveSeek() {
@@ -310,6 +399,9 @@ class PlayerViewModel: ObservableObject {
         settings.danmakuTop = danmakuShowTop
         settings.danmakuScroll = danmakuShowScroll
         settings.danmakuBottom = danmakuShowBottom
+        settings.danmakuMassive = danmakuMassive
+        settings.danmakuArea = danmakuArea
+        settings.danmakuDuration = danmakuDuration
     }
 
     // MARK: - Cleanup
@@ -318,6 +410,9 @@ class PlayerViewModel: ObservableObject {
         _ = beginLoadGeneration()
         controlsTimer?.invalidate()
         danmakuLoadingTask?.cancel()
+        danmakuLoading = false
+        danmakuStatusMessage = nil
+        danmakuItems = []
         currentSource = nil
         playerController.cleanup()
     }

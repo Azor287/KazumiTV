@@ -114,6 +114,23 @@ struct PlayerView: View {
         viewModel.playerController.player != nil
     }
 
+    private var danmakuControlIcon: String {
+        if viewModel.danmakuLoading {
+            return "hourglass"
+        }
+        return viewModel.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"
+    }
+
+    private var danmakuStatusText: String? {
+        if viewModel.danmakuLoading {
+            return "弹幕加载中"
+        }
+        if let message = viewModel.danmakuStatusMessage, viewModel.danmakuItems.isEmpty {
+            return message
+        }
+        return nil
+    }
+
     var body: some View {
         ZStack {
             if let player = viewModel.playerController.player {
@@ -134,12 +151,17 @@ struct PlayerView: View {
             DanmakuOverlayView(
                 danmakus: viewModel.danmakuItems,
                 currentTime: viewModel.currentTime,
+                isPlaying: viewModel.isPlaying && !viewModel.isBuffering,
                 isEnabled: viewModel.danmakuEnabled,
+                playbackRate: viewModel.playbackRate,
                 fontSize: viewModel.danmakuFontSize,
                 opacity: viewModel.danmakuOpacity,
                 showTop: viewModel.danmakuShowTop,
                 showScroll: viewModel.danmakuShowScroll,
-                showBottom: viewModel.danmakuShowBottom
+                showBottom: viewModel.danmakuShowBottom,
+                duration: viewModel.danmakuDuration,
+                area: viewModel.danmakuArea,
+                massiveMode: viewModel.danmakuMassive
             )
             .ignoresSafeArea()
 
@@ -321,6 +343,20 @@ struct PlayerView: View {
                                 await playAdjacentEpisode(1)
                             }
                         }
+                    }
+
+                    playerControlButton(control: .danmaku, icon: danmakuControlIcon, title: "弹幕", size: 26) {
+                        toggleDanmaku()
+                    }
+
+                    if let danmakuStatusText {
+                        Text(danmakuStatusText)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white.opacity(0.62))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .frame(maxWidth: 240, alignment: .leading)
                     }
 
                     Spacer(minLength: 36)
@@ -593,6 +629,9 @@ struct PlayerView: View {
         case .playlist:
             openPlaylist()
 
+        case .danmaku:
+            toggleDanmaku()
+
         case nil:
             togglePlayPauseFromControls()
         }
@@ -743,6 +782,7 @@ struct PlayerView: View {
         if hasPlaylist {
             controls.append(.nextEpisode)
         }
+        controls.append(.danmaku)
         if activePlaybackSession != nil {
             controls.append(.playlist)
         }
@@ -767,6 +807,11 @@ struct PlayerView: View {
     private func togglePlayPauseFromControls() {
         viewModel.togglePlayPause()
         showControls(autoHide: false)
+    }
+
+    private func toggleDanmaku() {
+        viewModel.toggleDanmaku()
+        showControls(focus: .danmaku, autoHide: viewModel.isPlaying)
     }
 
     private func loadActiveEpisode() async {
@@ -1374,6 +1419,7 @@ private enum PlayerControl: Hashable {
     case progress
     case playlist
     case nextEpisode
+    case danmaku
 }
 
 private struct PlaybackHistorySourceInfo {

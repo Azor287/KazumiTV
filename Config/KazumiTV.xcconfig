@@ -1,0 +1,9 @@
+// Public build settings for KazumiTV.
+// Do not put real DanDanPlay credentials in this file.
+
+DANDANPLAY_APP_ID =
+DANDANPLAY_APP_SECRET =
+
+// Create Config/DanDanPlay.local.xcconfig from the example template to enable
+// DanDanPlay danmaku for local source builds.
+#include? "DanDanPlay.local.xcconfig"
