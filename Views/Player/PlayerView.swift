@@ -151,7 +151,9 @@ struct PlayerView: View {
             DanmakuOverlayView(
                 danmakus: viewModel.danmakuItems,
                 currentTime: viewModel.currentTime,
+                isPlaying: viewModel.isPlaying && !viewModel.isBuffering,
                 isEnabled: viewModel.danmakuEnabled,
+                playbackRate: viewModel.playbackRate,
                 fontSize: viewModel.danmakuFontSize,
                 opacity: viewModel.danmakuOpacity,
                 showTop: viewModel.danmakuShowTop,

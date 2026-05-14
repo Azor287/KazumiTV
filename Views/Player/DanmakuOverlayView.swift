@@ -11,7 +11,9 @@ import UIKit
 struct DanmakuOverlayView: View {
     let danmakus: [DanmakuItem]
     let currentTime: TimeInterval
+    let isPlaying: Bool
     let isEnabled: Bool
+    let playbackRate: Float
     let fontSize: CGFloat
     let opacity: Double
     let showTop: Bool
@@ -20,6 +22,8 @@ struct DanmakuOverlayView: View {
     let duration: TimeInterval
     let area: Double
     let massiveMode: Bool
+
+    @State private var timeAnchor: DanmakuTimeAnchor?
 
     private var lineHeight: CGFloat {
         max(fontSize + 10, fontSize * 1.35)
@@ -30,49 +34,84 @@ struct DanmakuOverlayView: View {
     }
 
     var body: some View {
-        Canvas { context, size in
-            guard isEnabled, size.width > 0, size.height > 0 else { return }
+        SwiftUI.TimelineView(.animation) { timeline in
+            let renderTime = renderedCurrentTime(at: timeline.date)
 
-            let visibleDanmakus = getVisibleDanmakus()
-            let scrollLanes = calculateScrollLanes(size: size, visibleDanmakus: visibleDanmakus.filter { $0.type == .scroll })
-            let topLanes = calculateFixedLanes(height: size.height, visibleDanmakus: visibleDanmakus.filter { $0.type == .top })
-            let bottomLanes = calculateFixedLanes(height: size.height, visibleDanmakus: visibleDanmakus.filter { $0.type == .bottom })
+            Canvas { context, size in
+                guard isEnabled, size.width > 0, size.height > 0 else { return }
 
-            for danmaku in visibleDanmakus {
-                let textSize = textSize(for: danmaku)
+                let visibleDanmakus = getVisibleDanmakus(at: renderTime)
+                let scrollLaneCandidates = getScrollLaneCandidates(at: renderTime)
+                let scrollLanes = calculateScrollLanes(size: size, laneCandidates: scrollLaneCandidates)
+                let topLanes = calculateFixedLanes(height: size.height, visibleDanmakus: visibleDanmakus.filter { $0.type == .top })
+                let bottomLanes = calculateFixedLanes(height: size.height, visibleDanmakus: visibleDanmakus.filter { $0.type == .bottom })
 
-                var position: CGPoint
-                var anchor: UnitPoint
+                for danmaku in visibleDanmakus {
+                    let textSize = textSize(for: danmaku)
 
-                switch danmaku.type {
-                case .scroll:
-                    guard let y = scrollLanes[danmaku.id] else { continue }
-                    let x = scrollXPosition(for: danmaku, textWidth: textSize.width, screenWidth: size.width)
-                    position = CGPoint(x: x, y: y)
-                    anchor = .leading
+                    var position: CGPoint
+                    var anchor: UnitPoint
 
-                case .top:
-                    guard let y = topLanes[danmaku.id] else { continue }
-                    position = CGPoint(x: size.width / 2, y: y)
-                    anchor = .center
+                    switch danmaku.type {
+                    case .scroll:
+                        guard let y = scrollLanes[danmaku.id] else { continue }
+                        let x = scrollXPosition(for: danmaku, textWidth: textSize.width, screenWidth: size.width, at: renderTime)
+                        position = CGPoint(x: x, y: y)
+                        anchor = .leading
 
-                case .bottom:
-                    guard let y = bottomLanes[danmaku.id] else { continue }
-                    position = CGPoint(x: size.width / 2, y: size.height - y)
-                    anchor = .center
+                    case .top:
+                        guard let y = topLanes[danmaku.id] else { continue }
+                        position = CGPoint(x: size.width / 2, y: y)
+                        anchor = .center
+
+                    case .bottom:
+                        guard let y = bottomLanes[danmaku.id] else { continue }
+                        position = CGPoint(x: size.width / 2, y: size.height - y)
+                        anchor = .center
+                    }
+
+                    drawDanmaku(danmaku, at: position, anchor: anchor, in: &context)
                 }
-
-                drawDanmaku(danmaku, at: position, anchor: anchor, in: &context)
             }
+        }
+        .onAppear {
+            resetTimeAnchor(to: currentTime)
+        }
+        .onChange(of: currentTime) { _, newValue in
+            resetTimeAnchor(to: newValue)
+        }
+        .onChange(of: isPlaying) { _, _ in
+            resetTimeAnchor(to: currentTime)
+        }
+        .onChange(of: playbackRate) { _, _ in
+            resetTimeAnchor(to: currentTime)
         }
         .allowsHitTesting(false)
     }
 
+    // MARK: - Render Clock
+
+    private func renderedCurrentTime(at date: Date) -> TimeInterval {
+        guard isEnabled,
+              isPlaying,
+              playbackRate > 0,
+              let timeAnchor else {
+            return currentTime
+        }
+
+        let elapsed = date.timeIntervalSince(timeAnchor.date)
+        return max(0, timeAnchor.mediaTime + elapsed * Double(playbackRate))
+    }
+
+    private func resetTimeAnchor(to mediaTime: TimeInterval) {
+        timeAnchor = DanmakuTimeAnchor(mediaTime: mediaTime, date: Date())
+    }
+
     // MARK: - Visible Danmakus
 
-    private func getVisibleDanmakus() -> [DanmakuItem] {
+    private func getVisibleDanmakus(at renderTime: TimeInterval) -> [DanmakuItem] {
         danmakus.filter { danmaku in
-            let elapsed = currentTime - danmaku.time
+            let elapsed = renderTime - danmaku.time
             let visible = elapsed >= 0 && elapsed <= displayDuration(for: danmaku)
 
             guard visible else { return false }
@@ -91,35 +130,54 @@ struct DanmakuOverlayView: View {
         .map { $0 }
     }
 
+    private func getScrollLaneCandidates(at renderTime: TimeInterval) -> [DanmakuItem] {
+        let lookbackDuration = max(2.0, duration > 0 ? duration : 8.0) * 2
+
+        return danmakus
+            .filter { danmaku in
+                danmaku.type == .scroll &&
+                danmaku.time <= renderTime &&
+                renderTime - danmaku.time <= lookbackDuration
+            }
+            .sorted { $0.time < $1.time }
+    }
+
     // MARK: - Lane Calculation
 
-    private func calculateScrollLanes(size: CGSize, visibleDanmakus: [DanmakuItem]) -> [UUID: CGFloat] {
+    private func calculateScrollLanes(size: CGSize, laneCandidates: [DanmakuItem]) -> [UUID: CGFloat] {
         let laneCount = max(1, Int(danmakuHeight(for: size.height) / lineHeight))
-        var laneRightEdges = Array(repeating: CGFloat.leastNormalMagnitude, count: laneCount)
+        var laneStates = Array<ScrollLaneState?>(repeating: nil, count: laneCount)
         var result: [UUID: CGFloat] = [:]
 
-        for danmaku in visibleDanmakus.sorted(by: { $0.time < $1.time }) {
+        for danmaku in laneCandidates {
             let textWidth = textSize(for: danmaku).width
-            let x = scrollXPosition(for: danmaku, textWidth: textWidth, screenWidth: size.width)
-            let rightEdge = x + textWidth
             let spacing: CGFloat = 28
 
-            let preferredLane = laneRightEdges.firstIndex { edge in
-                edge + spacing < x
+            let preferredLane = laneStates.firstIndex { state in
+                canPlaceScrollDanmaku(
+                    danmaku,
+                    textWidth: textWidth,
+                    after: state,
+                    screenWidth: size.width,
+                    spacing: spacing
+                )
             }
             let selectedLane: Int?
 
             if let preferredLane {
                 selectedLane = preferredLane
             } else if massiveMode {
-                selectedLane = laneRightEdges.enumerated().min(by: { $0.element < $1.element })?.offset
+                selectedLane = laneStates.enumerated().min { lhs, rhs in
+                    scrollLaneRightEdge(lhs.element, at: danmaku.time, screenWidth: size.width) <
+                    scrollLaneRightEdge(rhs.element, at: danmaku.time, screenWidth: size.width)
+                }?.offset
             } else {
                 selectedLane = nil
             }
 
             guard let selectedLane else { continue }
             result[danmaku.id] = CGFloat(selectedLane) * lineHeight + lineHeight / 2
-            laneRightEdges[selectedLane] = rightEdge
+            laneStates[selectedLane] = ScrollLaneState(danmaku: danmaku, textWidth: textWidth)
         }
 
         return result
@@ -143,10 +201,52 @@ struct DanmakuOverlayView: View {
         return max(lineHeight, height * CGFloat(clampedArea))
     }
 
-    private func scrollXPosition(for danmaku: DanmakuItem, textWidth: CGFloat, screenWidth: CGFloat) -> CGFloat {
-        let elapsed = currentTime - danmaku.time
+    private func scrollXPosition(for danmaku: DanmakuItem, textWidth: CGFloat, screenWidth: CGFloat, at renderTime: TimeInterval) -> CGFloat {
+        let elapsed = renderTime - danmaku.time
         let progress = CGFloat(elapsed / displayDuration(for: danmaku))
         return screenWidth - progress * (screenWidth + textWidth)
+    }
+
+    private func canPlaceScrollDanmaku(
+        _ danmaku: DanmakuItem,
+        textWidth: CGFloat,
+        after previousState: ScrollLaneState?,
+        screenWidth: CGFloat,
+        spacing: CGFloat
+    ) -> Bool {
+        guard let previousState else { return true }
+
+        let previous = previousState.danmaku
+        let previousDuration = displayDuration(for: previous)
+        let previousEndTime = previous.time + previousDuration
+        guard previousEndTime > danmaku.time else { return true }
+
+        let previousRightEdgeAtStart = scrollLaneRightEdge(
+            previousState,
+            at: danmaku.time,
+            screenWidth: screenWidth
+        )
+        guard previousRightEdgeAtStart + spacing < screenWidth else {
+            return false
+        }
+
+        let previousSpeed = (screenWidth + previousState.textWidth) / CGFloat(previousDuration)
+        let currentSpeed = (screenWidth + textWidth) / CGFloat(displayDuration(for: danmaku))
+        guard currentSpeed > previousSpeed else { return true }
+
+        let currentLeftAtPreviousEnd = screenWidth - CGFloat(previousEndTime - danmaku.time) * currentSpeed
+        return currentLeftAtPreviousEnd > spacing
+    }
+
+    private func scrollLaneRightEdge(_ state: ScrollLaneState?, at renderTime: TimeInterval, screenWidth: CGFloat) -> CGFloat {
+        guard let state else { return -CGFloat.greatestFiniteMagnitude }
+        let x = scrollXPosition(
+            for: state.danmaku,
+            textWidth: state.textWidth,
+            screenWidth: screenWidth,
+            at: renderTime
+        )
+        return x + state.textWidth
     }
 
     private func displayDuration(for danmaku: DanmakuItem) -> TimeInterval {
@@ -187,6 +287,16 @@ struct DanmakuOverlayView: View {
 
         context.draw(fillText, at: position, anchor: anchor)
     }
+}
+
+private struct DanmakuTimeAnchor {
+    let mediaTime: TimeInterval
+    let date: Date
+}
+
+private struct ScrollLaneState {
+    let danmaku: DanmakuItem
+    let textWidth: CGFloat
 }
 
 // MARK: - Danmaku Controls View
@@ -303,7 +413,9 @@ struct DanmakuToggleButton: View {
         DanmakuOverlayView(
             danmakus: DanmakuItem.samples,
             currentTime: 2.0,
+            isPlaying: true,
             isEnabled: true,
+            playbackRate: 1.0,
             fontSize: 18,
             opacity: 1.0,
             showTop: true,
