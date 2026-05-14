@@ -12,8 +12,6 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
-    DANDANPLAY_APP_ID: ""
-    DANDANPLAY_APP_SECRET: ""
 
 packages:
   Fuzi:
@@ -38,6 +36,9 @@ targets:
       - path: ViewModels
       - path: Services
       - path: Resources
+    configFiles:
+      Debug: Config/KazumiTV.xcconfig
+      Release: Config/KazumiTV.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kazumi.tv

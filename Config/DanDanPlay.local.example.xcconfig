@@ -1,0 +1,7 @@
+// Copy this file to Config/DanDanPlay.local.xcconfig and fill in your own
+// DanDanPlay Open API credentials.
+//
+// The local file is ignored by Git. Do not commit real credentials.
+
+DANDANPLAY_APP_ID = <your-app-id>
+DANDANPLAY_APP_SECRET = <your-app-secret>

@@ -55,6 +55,7 @@ server.log
 .env
 .env.*
 !.env.example
+*.local.xcconfig
 *.pem
 *.key
 
