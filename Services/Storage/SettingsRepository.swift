@@ -218,15 +218,15 @@ final class SettingsRepository {
         set { setBool(.privateMode, newValue) }
     }
 
-    /// 服务器代理地址 (用于视频抓取)
+    /// 外部解析服务地址 (仅作为原生解析失败后的后备)
     var serverProxyURL: String {
         get { getString(.proxyUrl, defaultValue: "http://127.0.0.1:5001") }
         set { setString(.proxyUrl, newValue) }
     }
 
-    /// 是否启用服务器代理
+    /// 是否启用外部解析后备服务
     var serverProxyEnabled: Bool {
-        get { getBool(.proxyEnable, defaultValue: true) }
+        get { getBool(.proxyEnable, defaultValue: false) }
         set { setBool(.proxyEnable, newValue) }
     }
 

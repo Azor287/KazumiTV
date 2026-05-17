@@ -166,18 +166,10 @@ class PlayerViewModel: ObservableObject {
         guard isCurrentLoad(generation) else { return }
         print("PlayerViewModel.resolveWithPageURL: 开始解析 pageURL: \(pageURL), pluginName: \(pluginName ?? "nil")")
         let settings = SettingsRepository.shared
-        print("PlayerViewModel.resolveWithPageURL: serverProxyEnabled = \(settings.serverProxyEnabled)")
-        print("PlayerViewModel.resolveWithPageURL: serverProxyURL = \(settings.serverProxyURL)")
+        print("PlayerViewModel.resolveWithPageURL: externalResolverEnabled = \(settings.serverProxyEnabled)")
+        print("PlayerViewModel.resolveWithPageURL: externalResolverURL = \(settings.serverProxyURL)")
 
-        guard settings.serverProxyEnabled else {
-            guard isCurrentLoad(generation) else { return }
-            print("PlayerViewModel.resolveWithPageURL: 服务器代理未启用")
-            isBuffering = false
-            error = PlayerError.serverProxyDisabled
-            return
-        }
-
-        // 使用服务器代理获取视频
+        // 优先使用 tvOS 原生解析；外部解析服务只作为显式后备。
         do {
             let resolver = VideoSourceResolver.shared
             print("PlayerViewModel.resolveWithPageURL: 获取 VideoSourceResolver")

@@ -2,7 +2,7 @@
 //  ServerAPI.swift
 //  KazumiTV
 //
-//  服务器代理 API - 用于在 tvOS 上获取视频 URL
+//  外部后备解析服务 API - 仅在原生解析失败且用户启用时获取最终视频 URL
 //
 
 import Foundation
@@ -14,7 +14,7 @@ actor ServerAPI {
     private let healthCheckTimeout: TimeInterval = 8
     private let playbackUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 
-    // 服务器地址 - 从设置中加载
+    // 外部后备服务地址 - 从设置中加载
     private var serverBaseURL: String {
         normalizedServerBaseURL(SettingsRepository.shared.serverProxyURL)
     }
@@ -40,14 +40,14 @@ actor ServerAPI {
 
     // MARK: - 视频抓取
 
-    /// 从服务器抓取视频 URL
+    /// 从外部后备服务抓取最终视频 URL
     /// - Parameters:
     ///   - url: 目标页面 URL
     ///   - plugin: 插件名称 (age, dm84, aafun, default)
     /// - Returns: 视频源信息
     func scrapeVideo(url: String, plugin: String = "default") async throws -> VideoSource {
-        print("ServerAPI: 开始抓取视频, URL: \(url), 插件: \(plugin)")
-        print("ServerAPI: 服务器地址: \(serverBaseURL)")
+        print("ServerAPI: 开始外部后备解析, URL: \(url), 插件: \(plugin)")
+        print("ServerAPI: 后备服务地址: \(serverBaseURL)")
 
         guard var components = URLComponents(string: "\(serverBaseURL)/scrape") else {
             throw ServerAPIError.invalidURL
@@ -86,18 +86,13 @@ actor ServerAPI {
         if result.success, let videoURL = result.url, let videoSourceURL = URL(string: videoURL) {
             let sourcePage = result.sourcePage ?? url
             let referer = result.referer ?? sourcePage
-            let proxiedURL = proxiedPlaybackURL(for: videoSourceURL, referer: referer, sourcePage: sourcePage)
-            if let proxiedURL {
-                print("ServerAPI: 使用本地代理播放URL: \(proxiedURL.absoluteString)")
-            } else {
-                print("ServerAPI: 使用直连播放URL: \(videoSourceURL.absoluteString)")
-            }
+            print("ServerAPI: 外部后备解析得到远端播放URL: \(videoSourceURL.absoluteString)")
             return VideoSource(
-                url: proxiedURL ?? videoSourceURL,
+                url: videoSourceURL,
                 quality: result.quality ?? "默认",
                 pluginName: result.plugin ?? plugin,
-                referer: proxiedURL == nil ? referer : nil,
-                headers: playbackHeaders(referer: proxiedURL == nil ? referer : nil)
+                referer: referer,
+                headers: playbackHeaders(referer: referer)
             )
         } else if result.success {
             throw ServerAPIError.invalidURL
@@ -106,7 +101,7 @@ actor ServerAPI {
         }
     }
 
-    /// 使用 JavaScript 渲染方式抓取视频（需要 playwright）
+    /// 使用真实浏览器渲染方式抓取视频（需要外部服务中的 Playwright）
     /// - Parameter url: 目标页面 URL
     /// - Returns: 视频源信息
     func scrapeVideoWithJS(url: String) async throws -> VideoSource {
@@ -143,18 +138,13 @@ actor ServerAPI {
         if result.success, let videoURL = result.url, let videoSourceURL = URL(string: videoURL) {
             let sourcePage = result.sourcePage ?? url
             let referer = result.referer ?? sourcePage
-            let proxiedURL = proxiedPlaybackURL(for: videoSourceURL, referer: referer, sourcePage: sourcePage)
-            if let proxiedURL {
-                print("ServerAPI: 使用本地代理播放URL: \(proxiedURL.absoluteString)")
-            } else {
-                print("ServerAPI: 使用直连播放URL: \(videoSourceURL.absoluteString)")
-            }
+            print("ServerAPI: 外部浏览器后备解析得到远端播放URL: \(videoSourceURL.absoluteString)")
             return VideoSource(
-                url: proxiedURL ?? videoSourceURL,
+                url: videoSourceURL,
                 quality: "默认",
                 pluginName: "js_render",
-                referer: proxiedURL == nil ? referer : nil,
-                headers: playbackHeaders(referer: proxiedURL == nil ? referer : nil)
+                referer: referer,
+                headers: playbackHeaders(referer: referer)
             )
         } else if result.success {
             throw ServerAPIError.invalidURL
@@ -239,39 +229,6 @@ actor ServerAPI {
         }
 
         return headers
-    }
-
-    private func proxiedPlaybackURL(for remoteURL: URL, referer: String, sourcePage: String) -> URL? {
-        guard let scheme = remoteURL.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = remoteURL.host?.lowercased(),
-              host != "127.0.0.1",
-              host != "localhost" else {
-            return nil
-        }
-
-        let remoteValue = remoteURL.absoluteString.lowercased()
-        let endpoint = isPlaylistPlaybackURL(remoteURL, lowercasedAbsoluteString: remoteValue) ? "proxy/m3u8" : "proxy/media"
-
-        guard var components = URLComponents(string: "\(serverBaseURL)/\(endpoint)") else {
-            return nil
-        }
-
-        components.queryItems = [
-            URLQueryItem(name: "url", value: remoteURL.absoluteString),
-            URLQueryItem(name: "referer", value: referer),
-            URLQueryItem(name: "source_page", value: sourcePage)
-        ]
-
-        return components.url
-    }
-
-    private func isPlaylistPlaybackURL(_ url: URL, lowercasedAbsoluteString: String) -> Bool {
-        let path = url.path.lowercased()
-        return path.contains(".m3u8")
-            || lowercasedAbsoluteString.contains("m3u8")
-            || path.contains("manifest")
-            || path.contains("playlist")
     }
 
     private func originString(from referer: String) -> String? {

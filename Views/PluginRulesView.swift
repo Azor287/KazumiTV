@@ -14,6 +14,7 @@ struct PluginRulesView: View {
     @State private var repositoryItems: [PluginRepositoryItem] = []
     @State private var isLoadingRules = false
     @State private var isUpdatingAll = false
+    @State private var isInstallingRecommended = false
     @State private var isLoadingRepository = false
     @State private var repositorySortByName = false
     @State private var noticeText: String?
@@ -58,6 +59,7 @@ struct PluginRulesView: View {
             }
         }
         .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadRules()
         }
@@ -136,6 +138,9 @@ struct PluginRulesView: View {
                 showRepository = true
                 Task { await loadRepositoryIfNeeded() }
             }
+            toolbarButton(title: isInstallingRecommended ? "安装中" : "安装推荐", icon: "star", isBusy: isInstallingRecommended) {
+                Task { await installRecommendedRules() }
+            }
             toolbarButton(title: "新建", icon: "plus") {
                 editorContext = RuleEditorContext(rule: .template())
             }
@@ -143,7 +148,7 @@ struct PluginRulesView: View {
                 importText = ""
                 showImport = true
             }
-            toolbarButton(title: "恢复内置", icon: "arrow.counterclockwise") {
+            toolbarButton(title: "恢复推荐", icon: "arrow.counterclockwise") {
                 Task { await resetBundledRules() }
             }
         }
@@ -406,11 +411,26 @@ struct PluginRulesView: View {
     }
 
     @MainActor
+    private func installRecommendedRules() async {
+        isInstallingRecommended = true
+        defer { isInstallingRecommended = false }
+
+        do {
+            let count = try await pluginManager.installRecommendedRepositoryPlugins()
+            rules = await pluginManager.getAllPlugins()
+            showNotice(count == 0 ? "推荐规则已安装" : "已安装推荐规则 \(count) 条")
+        } catch {
+            print("PluginRulesView: 安装推荐规则失败: \(error.localizedDescription)")
+            showNotice("安装失败: \(shortError(error))")
+        }
+    }
+
+    @MainActor
     private func resetBundledRules() async {
         do {
             try await pluginManager.resetToBundledPlugins()
             rules = await pluginManager.getAllPlugins()
-            showNotice("已恢复内置规则")
+            showNotice("已恢复推荐规则")
         } catch {
             showNotice("恢复失败")
         }
@@ -814,7 +834,11 @@ private struct PluginRuleEditorView: View {
             chapterResult: chapterResult.trimmingCharacters(in: .whitespacesAndNewlines),
             referer: referer.trimmingCharacters(in: .whitespacesAndNewlines),
             adBlocker: adBlocker,
-            antiCrawlerConfig: rule.antiCrawlerConfig
+            antiCrawlerConfig: rule.antiCrawlerConfig,
+            nativeResolver: rule.nativeResolver,
+            mediaPatterns: rule.mediaPatterns,
+            iframePatterns: rule.iframePatterns,
+            playbackHeaders: rule.playbackHeaders
         )
     }
 }

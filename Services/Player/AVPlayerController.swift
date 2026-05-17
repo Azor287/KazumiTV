@@ -51,26 +51,31 @@ class AVPlayerController: ObservableObject {
         initialSeekTime = initialPosition(for: source.url, resumePosition: resumePosition)
         didApplyInitialSeek = false
 
+        let playbackSource: VideoSource
+        do {
+            playbackSource = try LocalHLSProxy.shared.proxiedSource(for: source)
+            if playbackSource.url != source.url {
+                if playbackSource.url.host == "127.0.0.1" || playbackSource.url.host == "localhost" {
+                    print("AVPlayerController.loadVideo: 使用真机本地 loopback 播放URL: \(playbackSource.url.absoluteString)")
+                } else {
+                    print("AVPlayerController.loadVideo: 使用直连播放URL: \(playbackSource.url.absoluteString)")
+                }
+            }
+        } catch {
+            print("AVPlayerController.loadVideo: 本地播放代理准备失败: \(error)")
+            self.error = error
+            isBuffering = false
+            return
+        }
+
         var options: [String: Any] = [:]
 
-        // Add headers for AVURLAsset
-        if !source.headers.isEmpty {
-            options["AVURLAssetHTTPHeaderFieldsKey"] = source.headers
-        }
-
-        // Add referer if present
-        if let referer = source.referer {
-            var headers = source.headers
-            headers["Referer"] = referer
-            options["AVURLAssetHTTPHeaderFieldsKey"] = headers
-        }
-
-        if let mimeType = inferredMIMEType(for: source.url) {
+        if let mimeType = inferredMIMEType(for: playbackSource.url) ?? inferredMIMEType(for: source.url) {
             options["AVURLAssetOutOfBandMIMETypeKey"] = mimeType
-            print("AVPlayerController.loadVideo: 使用 MIME type \(mimeType), url = \(source.url.absoluteString)")
+            print("AVPlayerController.loadVideo: 使用 MIME type \(mimeType), url = \(playbackSource.url.absoluteString)")
         }
 
-        let asset = AVURLAsset(url: source.url, options: options)
+        let asset = AVURLAsset(url: playbackSource.url, options: options)
         playerItem = AVPlayerItem(asset: asset)
 
         player = AVPlayer(playerItem: playerItem)
@@ -329,7 +334,7 @@ class AVPlayerController: ObservableObject {
                     if let errorLog = playerItem.errorLog() {
                         print("AVPlayerController: errorLog = \(errorLog.events)")
                     }
-                    self?.error = playerItem.error
+                    self?.error = self?.normalizedPlaybackError(playerItem.error) ?? PlayerError.playbackFailed
                 case .readyToPlay:
                     self?.applyInitialSeekIfNeeded()
                     self?.isBuffering = false
@@ -347,6 +352,19 @@ class AVPlayerController: ObservableObject {
                 self?.handlePlaybackEnded()
             }
             .store(in: &cancellables)
+    }
+
+    private func normalizedPlaybackError(_ error: Error?) -> Error {
+        guard let error else {
+            return PlayerError.playbackFailed
+        }
+
+        let description = error.localizedDescription.lowercased()
+        if description.contains("resource unavailable") {
+            return PlayerError.resourceUnavailable
+        }
+
+        return error
     }
 
     // MARK: - Playback Position
@@ -391,14 +409,14 @@ class AVPlayerController: ObservableObject {
 
     private func inferredMIMEType(for url: URL) -> String? {
         let pathExtension = url.pathExtension.lowercased()
-        if pathExtension == "m3u8" {
+        let absolute = url.absoluteString.lowercased()
+        if pathExtension == "m3u8" || absolute.contains("m3u8") || url.path.lowercased().contains("/playlist/") {
             return "application/vnd.apple.mpegurl"
         }
         if pathExtension == "mp4" || pathExtension == "m4v" || pathExtension == "mov" {
             return "video/mp4"
         }
 
-        let absolute = url.absoluteString.lowercased()
         let host = url.host?.lowercased() ?? ""
         let knownVideoHosts = [
             "toutiao",
@@ -479,6 +497,7 @@ enum PlayerError: LocalizedError {
     case missingEpisodeURL
     case serverProxyDisabled
     case playbackTimeout
+    case resourceUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -491,9 +510,11 @@ enum PlayerError: LocalizedError {
         case .missingEpisodeURL:
             return "当前章节没有插件播放页地址。请从搜索里的插件结果进入详情页，或先为该番剧匹配可播放源。"
         case .serverProxyDisabled:
-            return "服务器代理未启用。请在设置中开启服务器代理。"
+            return "该来源需要真实浏览器解析，当前无外部代理模式不支持。"
         case .playbackTimeout:
             return "当前线路启动超时，暂时无法播放。"
+        case .resourceUnavailable:
+            return "当前线路资源不可用或地区受限，正在尝试其他线路。"
         }
     }
 }

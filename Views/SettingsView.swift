@@ -120,20 +120,20 @@ struct SettingsView: View {
                 resetSettings()
             }
         } message: {
-            Text("播放、弹幕、隐身和服务器代理设置会恢复为默认值。")
+            Text("播放、弹幕、隐身和外部解析服务设置会恢复为默认值。")
         }
     }
 
     private var serverProxySection: some View {
-        settingsSection(title: "服务器代理", subtitle: "tvOS 使用本地代理解析播放地址") {
+        settingsSection(title: "外部解析服务", subtitle: "默认使用 Apple TV 本机解析与 127.0.0.1 播放代理") {
             toggleRow(
-                title: "启用服务器代理",
-                subtitle: "关闭后只使用本地规则解析，部分站点无法播放",
+                title: "启用外部后备解析",
+                subtitle: "仅在本机原生解析失败后调用，通常保持关闭",
                 icon: "network",
                 isOn: $serverEnabled
             ) { newValue in
                 SettingsRepository.shared.serverProxyEnabled = newValue
-                showNotice(newValue ? "已启用服务器代理" : "已关闭服务器代理")
+                showNotice(newValue ? "已启用外部后备解析" : "已关闭外部后备解析")
             }
             .focused($focusedSetting, equals: .serverProxyEnabled)
 
@@ -142,11 +142,11 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("服务器地址", systemImage: "server.rack")
+                        Label("后备服务地址", systemImage: "server.rack")
                             .font(.headline)
                             .foregroundColor(.kzText)
 
-                        Text("模拟器可用 127.0.0.1；真机填写运行服务器的 Mac 局域网地址")
+                        Text("正常播放走 Apple TV 本机 127.0.0.1；启用后备时真机填写 Mac 局域网地址")
                             .font(.subheadline)
                             .foregroundColor(.kzTextSecondary)
                     }
@@ -408,7 +408,7 @@ struct SettingsView: View {
 
             actionRow(
                 title: "恢复默认设置",
-                subtitle: "还原播放、弹幕、代理和隐身设置",
+                subtitle: "还原播放、弹幕、外部解析和隐身设置",
                 icon: "arrow.counterclockwise",
                 isBusy: false,
                 isDestructive: true
@@ -675,7 +675,7 @@ struct SettingsView: View {
             await MainActor.run {
                 isTestingConnection = false
                 connectionStatus = isHealthy ? .success : .failed
-                showNotice(isHealthy ? "服务器连接成功" : "服务器连接失败")
+                showNotice(isHealthy ? "后备服务连接成功" : "后备服务连接失败")
             }
         }
     }

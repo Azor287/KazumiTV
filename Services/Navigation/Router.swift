@@ -32,6 +32,9 @@ enum NavigationDestination: Hashable {
         if case .settings = self {
             return true
         }
+        if case .pluginRules = self {
+            return true
+        }
         if case .player = self {
             return true
         }

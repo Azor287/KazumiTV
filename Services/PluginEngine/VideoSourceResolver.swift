@@ -2,8 +2,9 @@
 //  VideoSourceResolver.swift
 //  KazumiTV
 //
-//  Video Source Resolver - resolves video URLs from plugin pages
-//  使用服务器代理解决 tvOS 无法执行 JavaScript 的问题
+//  Video Source Resolver - resolves video URLs from plugin pages.
+//  It now prefers native tvOS parsing and uses the external server only as
+//  an explicit fallback for sources that require a real browser runtime.
 //
 
 import Foundation
@@ -11,7 +12,7 @@ import Foundation
 actor VideoSourceResolver {
     static let shared = VideoSourceResolver()
 
-    /// 是否优先使用服务器代理 (从设置中读取)
+    /// 是否启用外部后备解析服务 (从设置中读取)
     var preferServerProxy: Bool {
         SettingsRepository.shared.serverProxyEnabled
     }
@@ -23,34 +24,36 @@ actor VideoSourceResolver {
     /// Resolve video URL from a page using a plugin
     func resolveVideoURL(pageURL: String, plugin: PluginRule) async throws -> VideoSource {
         print("VideoSourceResolver: 开始解析视频URL: \(pageURL), 插件: \(plugin.name)")
-        // 首先尝试使用服务器代理
-        if preferServerProxy {
-            print("VideoSourceResolver: 优先使用服务器代理")
+
+        do {
+            print("VideoSourceResolver: 优先使用 tvOS 原生解析")
+            let videoSource = try await NativeVideoResolver.shared.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+            print("VideoSourceResolver: 原生解析成功: \(videoSource.url)")
+            return videoSource
+        } catch {
+            print("VideoSourceResolver: 原生解析失败: \(error)")
+            guard preferServerProxy else {
+                if case VideoSourceError.invalidURL = error {
+                    throw error
+                }
+                throw VideoSourceError.externalResolverRequired
+            }
+
+            print("VideoSourceResolver: 尝试外部后备解析服务")
             do {
                 let videoSource = try await resolveWithServer(pageURL: pageURL, plugin: plugin)
-                print("VideoSourceResolver: 服务器代理解析成功: \(videoSource.url)")
+                print("VideoSourceResolver: 外部后备解析成功: \(videoSource.url)")
                 return videoSource
-            } catch {
-                print("VideoSourceResolver: 服务器代理解析失败: \(error)")
-                // 服务器不可用，打印警告但继续尝试其他方法
-                print("VideoSourceResolver: 服务器代理不可用，尝试本地解析...")
+            } catch let serverError {
+                print("VideoSourceResolver: 外部后备解析失败: \(serverError)")
+                throw serverError
             }
         }
-
-        // 对于非 webview 插件，尝试直接解析
-        guard plugin.useWebview else {
-            print("VideoSourceResolver: 插件不需要WebView，尝试直接解析")
-            return try await resolveDirectVideoURL(pageURL: pageURL, plugin: plugin)
-        }
-
-        // 对于需要 webview 的插件，使用 JavaScriptCore
-        print("VideoSourceResolver: 插件需要WebView，使用JavaScriptCore解析")
-        return try await resolveWithJavaScriptCore(pageURL: pageURL, plugin: plugin)
     }
 
-    // MARK: - 服务器代理解析
+    // MARK: - 外部后备解析
 
-    /// 使用服务器代理解析视频 URL
+    /// 使用外部解析服务解析视频 URL
     private func resolveWithServer(pageURL: String, plugin: PluginRule) async throws -> VideoSource {
         print("VideoSourceResolver.resolveWithServer: 开始，pageURL: \(pageURL), plugin: \(plugin.name)")
         let serverAPI = ServerAPI.shared

@@ -24,6 +24,13 @@
 	<string>$(DANDANPLAY_APP_ID)</string>
 	<key>DANDANPLAY_APP_SECRET</key>
 	<string>$(DANDANPLAY_APP_SECRET)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

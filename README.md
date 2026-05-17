@@ -8,7 +8,7 @@ KazumiTV 是 [Kazumi](https://github.com/Predidit/Kazumi) 的独立 Apple TV/tvO
 
 ## 项目状态
 
-KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，由于 tvOS 无法在应用内直接执行与桌面端相同的网页解析和 JavaScript 工作流，因此项目使用本地或服务端代理来解析视频 URL。
+KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，默认使用原生 `URLSession + Fuzi + JavaScriptCore` 解析视频地址，并在 App 内启动只绑定 `127.0.0.1` 的 loopback 播放代理，为 HLS 播放列表、分片、密钥和 MP4 请求注入必要请求头。外部 Python/Playwright 服务仅作为可选后备解析服务。
 
 ## 使用截图
 
@@ -23,17 +23,19 @@ KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，由于 tvOS
 - tvOS 应用：Swift、SwiftUI、MVVM
 - 导航：基于 `NavigationStack` 与共享 Router
 - 插件解析：通过 Fuzi 进行 XPath 解析
+- 视频解析：原生解析优先，不使用 WebView、WKWebView 或 Playwright
+- 播放代理：App 内 `127.0.0.1` loopback HLS/MP4 代理，负责重写播放列表与透传 Range
 - 本地存储：SQLite.swift 与 UserDefaults
 - 图片加载与缓存：Kingfisher
-- 服务器代理：Python Flask + Playwright，位于 `kazumi-server/`
+- 外部后备解析服务：Python Flask + Playwright，位于 `kazumi-server/`
 
 ## 环境要求
 
 - Xcode 15 或更新版本
 - tvOS 17.0 或更新版本
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-- Python 3，用于可选的服务器代理
-- Playwright Chromium，用于服务端网页解析
+- Python 3，仅用于可选的外部后备解析服务
+- Playwright Chromium，仅用于外部后备解析服务中的真实浏览器解析
 
 ## 构建
 
@@ -83,22 +85,40 @@ xcodebuild -project KazumiTV.xcodeproj \
 
 请不要把真实 DanDanPlay 密钥提交到仓库。`Config/DanDanPlay.local.xcconfig` 已被 Git 忽略；未配置凭据时，播放器会保留弹幕开关与渲染能力，但弹幕加载会显示未配置提示。
 
-## 服务器代理
+## 播放解析模式
 
-代理服务器位于 `kazumi-server/`。
+默认模式不需要启动 `kazumi-server`。播放链路为：
+
+```text
+tvOS App 原生解析页面 -> App 内 127.0.0.1 loopback 代理 -> AVPlayer
+```
+
+本地 loopback 代理只监听 Apple TV 真机自己的 `127.0.0.1` 随机端口，不会暴露到局域网。它会把远端 m3u8/mp4 映射为短 token URL，重写 HLS master/media playlist、segment、`EXT-X-KEY` 和 `EXT-X-MAP`，并透传 `Range`、`Content-Type`、`Content-Length`、`Content-Range` 等响应头。
+
+如果某个来源必须依赖真实浏览器执行复杂脚本、验证码或强反爬逻辑，默认无外部代理模式会判定为不支持。此时可以在设置里显式启用“外部后备解析”。
+
+## 规则源
+
+首次安装会优先尝试从 [KazumiRules](https://github.com/Predidit/KazumiRules) 获取推荐原生播放规则，并以内置 AGE、DM84、aafun 作为离线兜底。已有安装不会在播放时自动联网更新规则；可以在“规则管理”里使用“安装推荐”补齐 MXdm、omofun03、xfdmneo、7sefun、gugu3 等无外部代理优先规则，或使用“规则仓库”手动安装更多规则。
+
+默认播放源排序会优先使用近期开播成功的来源；没有历史记录时，MXdm 等无反爬原生播放源会排在 AGE/aafun 这类更容易遇到 CDN 地区限制的来源前面。
+
+## 外部后备解析服务
+
+后备服务位于 `kazumi-server/`，仅用于原生解析失败时获取最终视频 URL；实际播放仍会回到 Apple TV App 内的 `127.0.0.1` loopback 代理。
 
 ```bash
 cd kazumi-server
 ./start.sh
 ```
 
-默认情况下，服务器会尝试使用 `5001` 端口。在 tvOS 应用设置中配置代理服务器地址，例如：
+默认情况下，服务会尝试使用 `5001` 端口。在 tvOS 应用设置中配置后备服务地址，例如：
 
 ```text
 http://192.168.1.100:5001
 ```
 
-如果需要自定义服务端口，可以在启动服务器时传入 `--port` 或 `-p`：
+如果需要自定义端口，可以在启动服务时传入 `--port` 或 `-p`：
 
 ```bash
 cd kazumi-server

@@ -268,6 +268,7 @@ enum VideoSourceError: LocalizedError {
     case extractionFailed
     case videoSourceNotFound
     case webViewRequired
+    case externalResolverRequired
     case timeout
     case cancelled
     case serverUnavailable
@@ -284,12 +285,14 @@ enum VideoSourceError: LocalizedError {
             return "未找到视频源"
         case .webViewRequired:
             return "此来源需要 WebView（tvOS 不支持）"
+        case .externalResolverRequired:
+            return "该来源需要真实浏览器解析，当前无外部代理模式不支持。"
         case .timeout:
             return "视频提取超时"
         case .cancelled:
             return "视频提取已取消"
         case .serverUnavailable:
-            return "视频服务器代理不可用"
+            return "外部解析服务不可用"
         }
     }
 }
