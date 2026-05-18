@@ -15,6 +15,7 @@ struct SettingsView: View {
 
     @State private var serverURL: String = SettingsRepository.shared.serverProxyURL
     @State private var serverEnabled: Bool = SettingsRepository.shared.serverProxyEnabled
+    @State private var privateWebResolverEnabled: Bool = SettingsRepository.shared.privateWebResolverEnabled
     @State private var playResume: Bool = SettingsRepository.shared.playResume
     @State private var autoPlay: Bool = SettingsRepository.shared.autoPlay
     @State private var autoPlayNext: Bool = SettingsRepository.shared.autoPlayNext
@@ -120,7 +121,7 @@ struct SettingsView: View {
                 resetSettings()
             }
         } message: {
-            Text("播放、弹幕、隐身和外部解析服务设置会恢复为默认值。")
+            Text("播放、弹幕、隐身和解析服务设置会恢复为默认值。")
         }
     }
 
@@ -136,6 +137,18 @@ struct SettingsView: View {
                 showNotice(newValue ? "已启用外部后备解析" : "已关闭外部后备解析")
             }
             .focused($focusedSetting, equals: .serverProxyEnabled)
+
+            settingsDivider
+
+            toggleRow(
+                title: "实验性私有 WebView 解析",
+                subtitle: "仅限侧载/开源实验构建；本机解析失败后尝试隐藏网页环境",
+                icon: "safari",
+                isOn: $privateWebResolverEnabled
+            ) { newValue in
+                SettingsRepository.shared.privateWebResolverEnabled = newValue
+                showNotice(newValue ? "已启用实验性私有 WebView 解析" : "已关闭实验性私有 WebView 解析")
+            }
 
             settingsDivider
 
@@ -726,6 +739,7 @@ struct SettingsView: View {
     private func reloadFromSettings() {
         serverURL = SettingsRepository.shared.serverProxyURL
         serverEnabled = SettingsRepository.shared.serverProxyEnabled
+        privateWebResolverEnabled = SettingsRepository.shared.privateWebResolverEnabled
         playResume = SettingsRepository.shared.playResume
         autoPlay = SettingsRepository.shared.autoPlay
         autoPlayNext = SettingsRepository.shared.autoPlayNext

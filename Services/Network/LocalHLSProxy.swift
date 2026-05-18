@@ -17,23 +17,25 @@ final class LocalHLSProxy {
 
     private let lock = NSLock()
     private let cookieJar = MediaCookieJar()
+    private let mediaSession: URLSession
     private var resources: [String: LocalProxyResource] = [:]
+    private var resourceTokensByKey: [String: String] = [:]
     private var channel: Channel?
     private var group: MultiThreadedEventLoopGroup?
     private var port: Int?
 
-    private init() {}
+    private init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 45
+        configuration.timeoutIntervalForResource = 60
+        configuration.httpShouldSetCookies = false
+        configuration.connectionProxyDictionary = [:]
+        self.mediaSession = URLSession(configuration: configuration)
+    }
 
     func proxiedSource(for source: VideoSource) throws -> VideoSource {
-        let playbackURL = directPlaybackURL(for: source.url)
-        let playbackSource = sourceByReplacingURL(source, with: playbackURL)
-
-        guard isPlaylistURL(playbackURL) else {
-            if playbackURL != source.url {
-                print("LocalHLSProxy: upgraded direct media URL to HTTPS: \(playbackURL.absoluteString)")
-            }
-            return playbackSource
-        }
+        let playbackURL = source.url
+        let playbackSource = source
 
         guard shouldProxy(url: playbackURL) else {
             return playbackSource
@@ -45,12 +47,14 @@ final class LocalHLSProxy {
             throw LocalHLSProxyError.notRunning
         }
 
+        resetResources()
+
+        let route = isPlaylistURL(playbackURL) ? "playlist" : "media"
         let token = register(
             url: playbackURL,
             headers: playbackHeaders(for: playbackSource),
             sourcePage: playbackSource.referer
         )
-        let route = isPlaylistURL(playbackURL) ? "playlist" : "media"
         guard let localURL = URL(string: "http://127.0.0.1:\(port)/\(route)/\(token)") else {
             throw LocalHLSProxyError.invalidLocalURL
         }
@@ -64,41 +68,64 @@ final class LocalHLSProxy {
         )
     }
 
-    fileprivate func route(
+    fileprivate func respond(
         head: HTTPRequestHead,
-        body: ByteBuffer?
-    ) async -> LocalProxyResponse {
+        body: ByteBuffer?,
+        writeResponse: @escaping (LocalProxyResponse) async -> Void,
+        writeStreamHead: @escaping (Int, [String: String]) async throws -> Void,
+        writeStreamBody: @escaping (Data) async throws -> Void,
+        finishStream: @escaping () async -> Void
+    ) async {
         guard head.method == .GET || head.method == .HEAD else {
-            return LocalProxyResponse(statusCode: 405, headers: ["Allow": "GET, HEAD"], body: Data())
+            await writeResponse(LocalProxyResponse(statusCode: 405, headers: ["Allow": "GET, HEAD"], body: Data()))
+            return
         }
 
         guard let components = URLComponents(string: "http://127.0.0.1\(head.uri)") else {
-            return LocalProxyResponse(statusCode: 400, bodyText: "Bad request")
+            await writeResponse(LocalProxyResponse(statusCode: 400, bodyText: "Bad request"))
+            return
         }
 
         let parts = components.path.split(separator: "/").map(String.init)
         guard parts.count == 2 else {
-            return LocalProxyResponse(statusCode: 404, bodyText: "Not found")
+            await writeResponse(LocalProxyResponse(statusCode: 404, bodyText: "Not found"))
+            return
         }
 
         let route = parts[0]
         let token = parts[1]
         guard let resource = resource(for: token) else {
-            return LocalProxyResponse(statusCode: 404, bodyText: "Unknown media token")
+            await writeResponse(LocalProxyResponse(statusCode: 404, bodyText: "Unknown media token"))
+            return
         }
 
+        var didStartStream = false
         do {
             switch route {
             case "playlist":
-                return try await playlistResponse(for: resource, requestHead: head)
+                let response = try await playlistResponse(for: resource, requestHead: head)
+                await writeResponse(response)
             case "media":
-                return try await mediaResponse(for: resource, requestHead: head)
+                try await streamMediaResponse(
+                    for: resource,
+                    requestHead: head,
+                    writeHead: { statusCode, headers in
+                        didStartStream = true
+                        try await writeStreamHead(statusCode, headers)
+                    },
+                    writeBody: writeStreamBody,
+                    finish: finishStream
+                )
             default:
-                return LocalProxyResponse(statusCode: 404, bodyText: "Not found")
+                await writeResponse(LocalProxyResponse(statusCode: 404, bodyText: "Not found"))
             }
         } catch {
-            print("LocalHLSProxy: request failed for \(resource.url): \(error)")
-            return LocalProxyResponse(statusCode: 502, bodyText: error.localizedDescription)
+            print("LocalHLSProxy: request failed url=\(redactedURLString(resource.url)) error=\(error.localizedDescription)")
+            if didStartStream {
+                await finishStream()
+            } else {
+                await writeResponse(LocalProxyResponse(statusCode: 502, bodyText: error.localizedDescription))
+            }
         }
     }
 
@@ -148,7 +175,11 @@ final class LocalHLSProxy {
         headers: [String: String],
         sourcePage: String?
     ) -> String {
-        let token = UUID().uuidString
+        let resourceKey = cacheKey(
+            url: url,
+            headers: headers,
+            sourcePage: sourcePage
+        )
         let resource = LocalProxyResource(
             url: url,
             headers: cookieJar.headersByAddingCookies(headers, for: url),
@@ -156,10 +187,24 @@ final class LocalHLSProxy {
         )
 
         lock.lock()
+        if let existingToken = resourceTokensByKey[resourceKey] {
+            lock.unlock()
+            return existingToken
+        }
+
+        let token = UUID().uuidString
         resources[token] = resource
+        resourceTokensByKey[resourceKey] = token
         lock.unlock()
 
         return token
+    }
+
+    private func resetResources() {
+        lock.lock()
+        resources.removeAll()
+        resourceTokensByKey.removeAll()
+        lock.unlock()
     }
 
     private func resource(for token: String) -> LocalProxyResource? {
@@ -179,19 +224,28 @@ final class LocalHLSProxy {
             includeRange: false
         )
 
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1),
-              text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") else {
-            print("LocalHLSProxy: upstream did not return HLS playlist, status=\(response.statusCode), url=\(resource.url)")
+        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            print("LocalHLSProxy: upstream did not return HLS playlist status=\(response.statusCode) url=\(redactedURLString(resource.url)) contentType=\(response.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
             return LocalProxyResponse(statusCode: 502, bodyText: "远端没有返回 HLS 播放列表")
+        }
+        let inspection = HLSPlaylistInspector.inspect(text, url: resource.url)
+        guard inspection.isPlaylist else {
+            print("LocalHLSProxy: upstream did not return HLS playlist status=\(response.statusCode) url=\(redactedURLString(resource.url)) contentType=\(response.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
+            return LocalProxyResponse(statusCode: 502, bodyText: "远端没有返回 HLS 播放列表")
+        }
+        guard inspection.isLikelyPlayable else {
+            print("LocalHLSProxy: upstream returned placeholder HLS url=\(redactedURLString(resource.url)) reason=\(inspection.reason ?? "unplayable playlist")")
+            return LocalProxyResponse(statusCode: 502, bodyText: "远端返回占位播放列表")
         }
 
         let rewritten = rewritePlaylist(text, playlistURL: response.url ?? resource.url, resource: resource)
-        let body = requestHead.method == .HEAD ? Data() : Data(rewritten.utf8)
+        let rewrittenData = Data(rewritten.utf8)
+        let body = requestHead.method == .HEAD ? Data() : rewrittenData
         return LocalProxyResponse(
             statusCode: 200,
             headers: [
                 "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
-                "Content-Length": "\(body.count)",
+                "Content-Length": "\(rewrittenData.count)",
                 "Cache-Control": "no-cache",
                 "Access-Control-Allow-Origin": "*"
             ],
@@ -199,38 +253,96 @@ final class LocalHLSProxy {
         )
     }
 
-    private func mediaResponse(
+    private func streamMediaResponse(
         for resource: LocalProxyResource,
-        requestHead: HTTPRequestHead
-    ) async throws -> LocalProxyResponse {
-        let (data, response) = try await fetchRemote(
+        requestHead: HTTPRequestHead,
+        writeHead: (Int, [String: String]) async throws -> Void,
+        writeBody: (Data) async throws -> Void,
+        finish: () async -> Void
+    ) async throws {
+        let request = remoteRequest(
             resource: resource,
             requestHead: requestHead,
             accept: "*/*",
-            includeRange: true
+            includeRange: true,
+            upstreamMethod: "GET"
         )
-        var headers = filteredResponseHeaders(from: response, fallbackContentType: guessContentType(for: resource.url))
-        headers["Accept-Ranges"] = headers["Accept-Ranges"] ?? "bytes"
-        headers["Access-Control-Allow-Origin"] = "*"
-        if headers["Content-Length"] == nil {
-            headers["Content-Length"] = "\(data.count)"
+
+        let bytesAndResponse: (URLSession.AsyncBytes, URLResponse)
+        do {
+            bytesAndResponse = try await mediaSession.bytes(for: request)
+        } catch {
+            guard shouldRetryByUpgradingToHTTPS(error: error, url: resource.url),
+                  let upgradedURL = httpsURL(for: resource.url) else {
+                throw error
+            }
+            print("LocalHLSProxy: retrying insecure media over HTTPS url=\(redactedURLString(upgradedURL))")
+            let upgradedResource = LocalProxyResource(
+                url: upgradedURL,
+                headers: resource.headers,
+                sourcePage: resource.sourcePage
+            )
+            try await streamMediaResponse(
+                for: upgradedResource,
+                requestHead: requestHead,
+                writeHead: writeHead,
+                writeBody: writeBody,
+                finish: finish
+            )
+            return
         }
 
-        return LocalProxyResponse(
-            statusCode: response.statusCode,
-            headers: headers,
-            body: requestHead.method == .HEAD ? Data() : data
-        )
+        let (bytes, response) = bytesAndResponse
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LocalHLSProxyError.invalidResponse
+        }
+        cookieJar.storeCookies(from: httpResponse, for: resource.url)
+        if let signal = WebChallengeDetector.detect(data: Data(), response: httpResponse) {
+            throw LocalHLSProxyError.webChallenge(signal)
+        }
+        guard (200...399).contains(httpResponse.statusCode) else {
+            print("LocalHLSProxy: upstream HTTP \(httpResponse.statusCode) url=\(redactedURLString(resource.url)) contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
+            throw LocalHLSProxyError.upstreamStatus(httpResponse.statusCode)
+        }
+        guard !isHTMLLikeContentType(httpResponse) else {
+            print("LocalHLSProxy: upstream returned HTML for media url=\(redactedURLString(resource.url)) contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
+            throw LocalHLSProxyError.invalidResponse
+        }
+
+        var headers = filteredResponseHeaders(from: httpResponse, fallbackContentType: guessContentType(for: resource.url))
+        headers["Accept-Ranges"] = headers["Accept-Ranges"] ?? "bytes"
+        headers["Access-Control-Allow-Origin"] = "*"
+
+        try await writeHead(httpResponse.statusCode, headers)
+        guard requestHead.method != .HEAD else {
+            await finish()
+            return
+        }
+
+        var buffer: [UInt8] = []
+        buffer.reserveCapacity(64 * 1024)
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= 64 * 1024 {
+                try await writeBody(Data(buffer))
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        if !buffer.isEmpty {
+            try await writeBody(Data(buffer))
+        }
+        await finish()
     }
 
-    private func fetchRemote(
+    private func remoteRequest(
         resource: LocalProxyResource,
         requestHead: HTTPRequestHead,
         accept: String,
-        includeRange: Bool
-    ) async throws -> (Data, HTTPURLResponse) {
+        includeRange: Bool,
+        upstreamMethod: String? = nil
+    ) -> URLRequest {
         var request = URLRequest(url: resource.url)
-        request.httpMethod = "GET"
+        request.httpMethod = upstreamMethod ?? (requestHead.method == .HEAD ? "HEAD" : "GET")
         request.timeoutInterval = 45
         request.setValue(accept, forHTTPHeaderField: "Accept")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
@@ -249,15 +361,32 @@ final class LocalHLSProxy {
             }
         }
 
+        return request
+    }
+
+    private func fetchRemote(
+        resource: LocalProxyResource,
+        requestHead: HTTPRequestHead,
+        accept: String,
+        includeRange: Bool
+    ) async throws -> (Data, HTTPURLResponse) {
+        let request = remoteRequest(
+            resource: resource,
+            requestHead: requestHead,
+            accept: accept,
+            includeRange: includeRange,
+            upstreamMethod: "GET"
+        )
+
         let dataAndResponse: (Data, URLResponse)
         do {
-            dataAndResponse = try await URLSession.shared.data(for: request)
+            dataAndResponse = try await mediaSession.data(for: request)
         } catch {
             guard shouldRetryByUpgradingToHTTPS(error: error, url: resource.url),
                   let upgradedURL = httpsURL(for: resource.url) else {
                 throw error
             }
-            print("LocalHLSProxy: retrying insecure media over HTTPS: \(upgradedURL.absoluteString)")
+            print("LocalHLSProxy: retrying insecure media over HTTPS url=\(redactedURLString(upgradedURL))")
             let upgradedResource = LocalProxyResource(
                 url: upgradedURL,
                 headers: resource.headers,
@@ -275,8 +404,11 @@ final class LocalHLSProxy {
             throw LocalHLSProxyError.invalidResponse
         }
         cookieJar.storeCookies(from: httpResponse, for: resource.url)
+        if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
+            throw LocalHLSProxyError.webChallenge(signal)
+        }
         guard (200...399).contains(httpResponse.statusCode) else {
-            print("LocalHLSProxy: upstream HTTP \(httpResponse.statusCode), url=\(resource.url)")
+            print("LocalHLSProxy: upstream HTTP \(httpResponse.statusCode) url=\(redactedURLString(resource.url)) contentType=\(httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
             throw LocalHLSProxyError.upstreamStatus(httpResponse.statusCode)
         }
         return (data, httpResponse)
@@ -395,6 +527,10 @@ final class LocalHLSProxy {
                 headers[name] = value
             }
         }
+        if headers["Content-Type"]?.lowercased().contains("image/gif") == true,
+           fallbackContentType == "video/mp2t" {
+            headers["Content-Type"] = fallbackContentType
+        }
         headers["Content-Type"] = headers["Content-Type"] ?? fallbackContentType
         headers["Cache-Control"] = "no-store"
         return headers
@@ -409,14 +545,6 @@ final class LocalHLSProxy {
         return host != "127.0.0.1" && host != "localhost"
     }
 
-    private func directPlaybackURL(for url: URL) -> URL {
-        guard !isPlaylistURL(url),
-              let upgradedURL = httpsURL(for: url) else {
-            return url
-        }
-        return upgradedURL
-    }
-
     private func httpsURL(for url: URL) -> URL? {
         guard url.scheme?.lowercased() == "http",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
@@ -424,16 +552,6 @@ final class LocalHLSProxy {
         }
         components.scheme = "https"
         return components.url
-    }
-
-    private func sourceByReplacingURL(_ source: VideoSource, with url: URL) -> VideoSource {
-        VideoSource(
-            url: url,
-            quality: source.quality,
-            pluginName: source.pluginName,
-            referer: source.referer,
-            headers: source.headers
-        )
     }
 
     private func shouldRetryByUpgradingToHTTPS(error: Error, url: URL) -> Bool {
@@ -446,7 +564,26 @@ final class LocalHLSProxy {
     private func isPlaylistURL(_ url: URL) -> Bool {
         let value = url.absoluteString.lowercased()
         let path = url.path.lowercased()
-        return path.contains(".m3u8") || value.contains("m3u8") || path.contains("manifest") || path.contains("playlist")
+        return value.contains(".m3u8")
+            || path.hasSuffix("/manifest")
+            || path.hasSuffix("/playlist")
+    }
+
+    private func isHTMLLikeContentType(_ response: HTTPURLResponse) -> Bool {
+        let contentType = (response.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        return contentType.contains("text/html") || contentType.contains("application/xhtml")
+    }
+
+    private func cacheKey(
+        url: URL,
+        headers: [String: String],
+        sourcePage: String?
+    ) -> String {
+        let headerKey = headers
+            .sorted { lhs, rhs in lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending }
+            .map { key, value in "\(key.lowercased())=\(value)" }
+            .joined(separator: "&")
+        return "\(url.absoluteString)|\(sourcePage ?? "")|\(headerKey)"
     }
 
     private func guessContentType(for url: URL) -> String {
@@ -454,6 +591,8 @@ final class LocalHLSProxy {
         case "m3u8":
             return "application/vnd.apple.mpegurl"
         case "ts":
+            return "video/mp2t"
+        case "gif":
             return "video/mp2t"
         case "m4s":
             return "video/iso.segment"
@@ -478,6 +617,15 @@ final class LocalHLSProxy {
             return "\(scheme)://\(host):\(port)"
         }
         return "\(scheme)://\(host)"
+    }
+
+    private func redactedURLString(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.host ?? "unknown"
+        }
+        components.query = components.queryItems?.isEmpty == false ? "<redacted>" : nil
+        components.fragment = nil
+        return components.string ?? "\(url.scheme ?? "https")://\(url.host ?? "unknown")\(url.path)"
     }
 }
 
@@ -509,11 +657,45 @@ private final class LocalHLSProxyHandler: ChannelInboundHandler {
             let proxy = proxy
             let body = body
             let loopBoundContext = context.loopBound
-            Task {
-                let response = await proxy.route(head: requestHead, body: body)
-                loopBoundContext.eventLoop.execute {
-                    Self.write(response: response, for: requestHead, context: loopBoundContext.value)
+            func writeOnEventLoop(_ operation: @escaping (ChannelHandlerContext) -> EventLoopFuture<Void>) async throws {
+                try await withCheckedThrowingContinuation { continuation in
+                    loopBoundContext.eventLoop.execute {
+                        operation(loopBoundContext.value).whenComplete { result in
+                            continuation.resume(with: result)
+                        }
+                    }
                 }
+            }
+            Task {
+                await proxy.respond(
+                    head: requestHead,
+                    body: body,
+                    writeResponse: { response in
+                        try? await writeOnEventLoop { context in
+                            Self.writeFuture(response: response, for: requestHead, context: context)
+                        }
+                    },
+                    writeStreamHead: { statusCode, headers in
+                        try await writeOnEventLoop { context in
+                            Self.writeStreamHeadFuture(
+                                statusCode: statusCode,
+                                headers: headers,
+                                for: requestHead,
+                                context: context
+                            )
+                        }
+                    },
+                    writeStreamBody: { data in
+                        try await writeOnEventLoop { context in
+                            Self.writeStreamBodyFuture(data: data, context: context)
+                        }
+                    },
+                    finishStream: {
+                        try? await writeOnEventLoop { context in
+                            Self.finishStreamFuture(context: context)
+                        }
+                    }
+                )
             }
         }
     }
@@ -523,6 +705,14 @@ private final class LocalHLSProxyHandler: ChannelInboundHandler {
         for requestHead: HTTPRequestHead,
         context: ChannelHandlerContext
     ) {
+        _ = writeFuture(response: response, for: requestHead, context: context)
+    }
+
+    private static func writeFuture(
+        response: LocalProxyResponse,
+        for requestHead: HTTPRequestHead,
+        context: ChannelHandlerContext
+    ) -> EventLoopFuture<Void> {
         var headers = NIOHTTP1.HTTPHeaders()
         for (name, value) in response.headers {
             headers.add(name: name, value: value)
@@ -539,9 +729,49 @@ private final class LocalHLSProxyHandler: ChannelInboundHandler {
             context.write(Self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         }
 
+        let promise = context.eventLoop.makePromise(of: Void.self)
         context.writeAndFlush(Self.wrapOutboundOut(.end(nil))).whenComplete { _ in
-            context.close(promise: nil)
+            context.close().whenComplete { result in
+                promise.completeWith(result)
+            }
         }
+        return promise.futureResult
+    }
+
+    private static func writeStreamHeadFuture(
+        statusCode: Int,
+        headers responseHeaders: [String: String],
+        for requestHead: HTTPRequestHead,
+        context: ChannelHandlerContext
+    ) -> EventLoopFuture<Void> {
+        var headers = NIOHTTP1.HTTPHeaders()
+        for (name, value) in responseHeaders {
+            headers.add(name: name, value: value)
+        }
+        headers.replaceOrAdd(name: "Connection", value: "close")
+
+        let status = HTTPResponseStatus(statusCode: statusCode)
+        let head = HTTPResponseHead(version: requestHead.version, status: status, headers: headers)
+        return context.writeAndFlush(Self.wrapOutboundOut(.head(head)))
+    }
+
+    private static func writeStreamBodyFuture(
+        data: Data,
+        context: ChannelHandlerContext
+    ) -> EventLoopFuture<Void> {
+        var buffer = context.channel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        return context.writeAndFlush(Self.wrapOutboundOut(.body(.byteBuffer(buffer))))
+    }
+
+    private static func finishStreamFuture(context: ChannelHandlerContext) -> EventLoopFuture<Void> {
+        let promise = context.eventLoop.makePromise(of: Void.self)
+        context.writeAndFlush(Self.wrapOutboundOut(.end(nil))).whenComplete { _ in
+            context.close().whenComplete { result in
+                promise.completeWith(result)
+            }
+        }
+        return promise.futureResult
     }
 }
 
@@ -577,6 +807,7 @@ enum LocalHLSProxyError: LocalizedError {
     case invalidLocalURL
     case invalidResponse
     case upstreamStatus(Int)
+    case webChallenge(WebChallengeSignal)
 
     var errorDescription: String? {
         switch self {
@@ -588,6 +819,13 @@ enum LocalHLSProxyError: LocalizedError {
             return "远端媒体响应无效"
         case .upstreamStatus(let statusCode):
             return "远端媒体请求失败: \(statusCode)"
+        case .webChallenge(let signal):
+            switch signal.kind {
+            case .challenge:
+                return "\(signal.displayName) 要求真实浏览器验证"
+            case .captcha:
+                return "\(signal.displayName) 要求验证码验证"
+            }
         }
     }
 }

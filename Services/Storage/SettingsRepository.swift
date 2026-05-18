@@ -49,6 +49,7 @@ final class SettingsRepository {
         // Network
         case proxyEnable = "proxyEnable"
         case proxyUrl = "proxyUrl"
+        case privateWebResolverEnable = "privateWebResolverEnable"
 
         // Display
         case defaultStartupPage = "defaultStartupPage"
@@ -230,6 +231,12 @@ final class SettingsRepository {
         set { setBool(.proxyEnable, newValue) }
     }
 
+    /// 是否启用实验性私有 WebView 解析
+    var privateWebResolverEnabled: Bool {
+        get { getBool(.privateWebResolverEnable, defaultValue: false) }
+        set { setBool(.privateWebResolverEnable, newValue) }
+    }
+
     // MARK: - Reset
 
     func resetToDefaults() {
@@ -255,7 +262,8 @@ final class SettingsRepository {
             .downloadDanmaku,
             .privateMode,
             .proxyEnable,
-            .proxyUrl
+            .proxyUrl,
+            .privateWebResolverEnable
         ] {
             remove(key)
         }

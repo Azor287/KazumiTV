@@ -8,6 +8,14 @@
 import Foundation
 import Fuzi
 
+private struct PluginSearchTimeoutError: LocalizedError {
+    let pluginName: String
+
+    var errorDescription: String? {
+        "\(pluginName) 搜索超时"
+    }
+}
+
 actor PluginManager {
     static let shared = PluginManager()
 
@@ -41,6 +49,7 @@ actor PluginManager {
     private var plugins: [PluginRule] = []
     private var pluginsByName: [String: PluginRule] = [:]
     private var searchWarmupHosts = Set<String>()
+    private let searchTimeoutNanoseconds: UInt64 = 12_000_000_000
 
     private init() {}
 
@@ -228,6 +237,10 @@ actor PluginManager {
             referer: plugin.referer,
             adBlocker: plugin.adBlocker,
             antiCrawlerConfig: plugin.antiCrawlerConfig,
+            sourceSearch: plugin.sourceSearch,
+            capability: plugin.capability,
+            fallback: plugin.fallback,
+            observability: plugin.observability,
             nativeResolver: plugin.nativeResolver,
             mediaPatterns: plugin.mediaPatterns,
             iframePatterns: plugin.iframePatterns,
@@ -458,13 +471,18 @@ actor PluginManager {
 
     /// Search using all available plugins
     func search(keyword: String) async throws -> [SearchItem] {
-        let activePlugins = plugins
+        let activePlugins = plugins.filter { $0.playbackCapability.searchSupported }
+        let timeoutNanoseconds = searchTimeoutNanoseconds
 
         return await withTaskGroup(of: [SearchItem].self) { group in
             for plugin in activePlugins {
                 group.addTask {
                     do {
-                        return try await Self.searchWithPluginRule(plugin: plugin, keyword: keyword)
+                        return try await Self.searchWithPluginTimeout(
+                            plugin: plugin,
+                            keyword: keyword,
+                            timeoutNanoseconds: timeoutNanoseconds
+                        )
                     } catch {
                         print("Plugin \(plugin.name) search failed: \(error)")
                         return []
@@ -475,6 +493,28 @@ actor PluginManager {
             var results: [SearchItem] = []
             for await pluginResults in group {
                 results.append(contentsOf: pluginResults)
+            }
+            return results
+        }
+    }
+
+    private static func searchWithPluginTimeout(
+        plugin: PluginRule,
+        keyword: String,
+        timeoutNanoseconds: UInt64
+    ) async throws -> [SearchItem] {
+        try await withThrowingTaskGroup(of: [SearchItem].self) { group in
+            group.addTask {
+                try await PluginManager.shared.searchWithPlugin(plugin: plugin, keyword: keyword)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw PluginSearchTimeoutError(pluginName: plugin.name)
+            }
+            defer { group.cancelAll() }
+
+            guard let results = try await group.next() else {
+                throw CancellationError()
             }
             return results
         }

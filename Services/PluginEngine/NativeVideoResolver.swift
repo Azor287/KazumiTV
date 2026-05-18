@@ -17,8 +17,16 @@ actor NativeVideoResolver {
 
     private let maxDepth = 3
     private let defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    private let validationSession: URLSession
 
-    private init() {}
+    private init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.connectionProxyDictionary = [:]
+        validationSession = URLSession(configuration: configuration)
+    }
 
     func resolveVideoURL(pageURL: String, plugin: PluginRule) async throws -> VideoSource {
         guard let rootURL = URL(string: normalizedURLString(pageURL, baseURL: plugin.baseURL)) else {
@@ -79,6 +87,15 @@ actor NativeVideoResolver {
                     addCandidate(candidate, to: &candidates, seen: &seenCandidates)
                 }
 
+                for candidate in await gugu3VideoCandidates(
+                    from: html,
+                    pageURL: fetchedPage.url,
+                    plugin: plugin,
+                    cookieJar: cookieJar
+                ) {
+                    addCandidate(candidate, to: &candidates, seen: &seenCandidates)
+                }
+
                 let nextPages = collectPlayerPages(
                     from: html,
                     baseURL: fetchedPage.url,
@@ -131,11 +148,17 @@ actor NativeVideoResolver {
         }
         let responseURL = httpResponse.url ?? url
         cookieJar.storeCookies(from: httpResponse, for: responseURL)
+        if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
+            throw videoSourceError(for: signal)
+        }
         guard (200...299).contains(httpResponse.statusCode) else {
             throw APIError.httpError(statusCode: httpResponse.statusCode)
         }
         guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
             throw APIError.decodingError
+        }
+        guard !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw VideoSourceError.emptyHTML
         }
         return NativeFetchedPage(html: html, url: responseURL)
     }
@@ -364,6 +387,181 @@ actor NativeVideoResolver {
         return values
     }
 
+    private func gugu3VideoCandidates(
+        from html: String,
+        pageURL: URL,
+        plugin: PluginRule,
+        cookieJar: MediaCookieJar
+    ) async -> [NativeVideoCandidate] {
+        guard isGugu3Page(pageURL, plugin: plugin, html: html) else {
+            return []
+        }
+
+        var candidates: [NativeVideoCandidate] = []
+        var seen = Set<String>()
+        for config in playerConfigs(from: html) {
+            let from = config.from?.lowercased() ?? ""
+            for token in decodedPlayerValues(config.url, encrypt: config.encrypt) {
+                guard from == "vwnet" || token.lowercased().hasPrefix("vwnet-"),
+                      let playerURL = gugu3PlayerURL(token: token, pageURL: pageURL, html: html) else {
+                    continue
+                }
+
+                do {
+                    let playerPage = try await fetchPage(
+                        url: playerURL,
+                        plugin: plugin,
+                        referer: pageURL.absoluteString,
+                        cookieJar: cookieJar
+                    )
+                    guard let request = gugu3MizhiRequest(from: playerPage.html, fallbackToken: token) else {
+                        continue
+                    }
+                    let responseText = try await fetchGugu3MizhiPlayInfo(
+                        request: request,
+                        playerURL: playerPage.url,
+                        plugin: plugin,
+                        cookieJar: cookieJar
+                    )
+                    for value in gugu3MizhiPlayInfoValues(from: responseText) {
+                        guard let url = mediaURL(from: value, baseURL: playerPage.url),
+                              !seen.contains(url.absoluteString) else {
+                            continue
+                        }
+                        seen.insert(url.absoluteString)
+                        candidates.append(
+                            NativeVideoCandidate(
+                                url: url,
+                                referer: playerPage.url.absoluteString,
+                                priority: 9
+                            )
+                        )
+                    }
+                } catch {
+                    print("NativeVideoResolver: gugu3 vwnet resolution failed: \(error)")
+                }
+            }
+        }
+        return candidates
+    }
+
+    private func isGugu3Page(_ pageURL: URL, plugin: PluginRule, html: String) -> Bool {
+        let host = pageURL.host?.lowercased() ?? ""
+        let pluginName = plugin.name.lowercased()
+        return pluginName.contains("gugu3")
+            || host.contains("gugu3.com")
+            || html.contains(#""from":"vwnet""#)
+            || html.contains("'from':'vwnet'")
+    }
+
+    private func gugu3PlayerURL(token: String, pageURL: URL, html: String) -> URL? {
+        guard var components = URLComponents(string: "https://player.gugu3.com/") else {
+            return nil
+        }
+        var queryItems = [
+            URLQueryItem(name: "url", value: token)
+        ]
+        let next = firstStringField(named: ["link_next"], in: html)
+        if let next, !next.isEmpty {
+            let host = pageURL.host ?? "www.gugu3.com"
+            queryItems.append(URLQueryItem(name: "next", value: "//\(host)\(next)"))
+        }
+        components.queryItems = queryItems
+        return components.url
+    }
+
+    private func gugu3MizhiRequest(from html: String, fallbackToken: String) -> Gugu3MizhiRequest? {
+        let block = gugu3ConfigBlock(from: html) ?? html
+        let token = firstStringField(named: ["url"], in: block) ?? fallbackToken
+        guard !token.isEmpty else {
+            return nil
+        }
+        return Gugu3MizhiRequest(
+            url: token,
+            time: firstStringField(named: ["time"], in: block) ?? "",
+            key: firstStringField(named: ["key"], in: block) ?? "",
+            vkey: firstStringField(named: ["vkey"], in: block) ?? ""
+        )
+    }
+
+    private func gugu3ConfigBlock(from html: String) -> String? {
+        let pattern = #"(?is)var\s+config\s*=\s*\{(.*?)\};"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return nil
+        }
+        let nsText = html as NSString
+        let range = NSRange(location: 0, length: nsText.length)
+        guard let match = regex.firstMatch(in: html, range: range),
+              match.numberOfRanges > 1 else {
+            return nil
+        }
+        return nsText.substring(with: match.range(at: 1))
+    }
+
+    private func fetchGugu3MizhiPlayInfo(
+        request playRequest: Gugu3MizhiRequest,
+        playerURL: URL,
+        plugin: PluginRule,
+        cookieJar: MediaCookieJar
+    ) async throws -> String {
+        guard let endpointURL = URL(string: "https://player.gugu3.com/admin/mizhi_json.php") else {
+            throw VideoSourceError.invalidURL
+        }
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 18
+        request.httpBody = formURLEncodedBody([
+            ("url", playRequest.url),
+            ("time", playRequest.time),
+            ("key", playRequest.key),
+            ("vkey", playRequest.vkey)
+        ])
+
+        var headers = playbackHeaders(
+            plugin: plugin,
+            referer: playerURL.absoluteString,
+            requestURL: endpointURL,
+            cookieJar: cookieJar
+        )
+        headers["Accept"] = "application/json,text/javascript,*/*;q=0.8"
+        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        headers["Origin"] = "https://player.gugu3.com"
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        for (name, value) in headers where !value.isEmpty {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        cookieJar.storeCookies(from: httpResponse, for: httpResponse.url ?? endpointURL)
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(statusCode: httpResponse.statusCode)
+        }
+        return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+    }
+
+    private func gugu3MizhiPlayInfoValues(from responseText: String) -> [String] {
+        guard let data = responseText.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        let keys = ["url", "json_url", "playurl", "video_url", "file", "src"]
+        var values: [String] = []
+        var seen = Set<String>()
+        for key in keys {
+            guard let value = object[key] as? String,
+                  !value.isEmpty,
+                  !seen.contains(value) else {
+                continue
+            }
+            seen.insert(value)
+            values.append(value)
+        }
+        return values
+    }
+
     private func decodeBaimaoHexPlayInfo(_ value: String) -> String? {
         let characters = Array(value)
         guard !characters.isEmpty, characters.count % 2 == 0 else {
@@ -528,6 +726,9 @@ actor NativeVideoResolver {
 
         for config in playerConfigs(from: text) {
             for value in decodedPlayerValues(config.url, encrypt: config.encrypt) {
+                if config.from?.lowercased() == "vwnet" || value.lowercased().hasPrefix("vwnet-") {
+                    continue
+                }
                 if mediaURL(from: value, baseURL: baseURL) != nil {
                     continue
                 }
@@ -680,7 +881,7 @@ actor NativeVideoResolver {
             } catch (_) {}
           };
           source.replace(/['"]((?:https?:)?\\/\\/[^'"\\s<>]+)['"]/g, (_, value) => hits.push(value));
-          source.replace(/['"]([^'"]+(?:m3u8|mp4|m4v|mov)[^'"]*)['"]/gi, (_, value) => hits.push(value));
+          source.replace(/['"]([^'"]+\\.(?:m3u8|mp4|m4v|mov)(?:[?#][^'"]*)?)['"]/gi, (_, value) => hits.push(value));
           source.replace(new RegExp('(?:var|let|const)\\\\s+[$A-Z_a-z][$\\\\w]*\\\\s*=\\\\s*(' + literalConcat + ')', 'g'), (_, expr) => evalStringLiteralExpression(expr));
           return JSON.stringify(hits);
         })()
@@ -918,10 +1119,14 @@ actor NativeVideoResolver {
     }
 
     private func isPlayableCandidate(_ candidate: NativeVideoCandidate, plugin: PluginRule, cookieJar: MediaCookieJar) async -> Bool {
-        guard isPlaylistURL(candidate.url) else {
-            return true
+        if isPlaylistURL(candidate.url) {
+            return await validatePlaylistCandidate(candidate, plugin: plugin, cookieJar: cookieJar)
         }
 
+        return await validateDirectMediaCandidate(candidate, plugin: plugin, cookieJar: cookieJar)
+    }
+
+    private func validatePlaylistCandidate(_ candidate: NativeVideoCandidate, plugin: PluginRule, cookieJar: MediaCookieJar) async -> Bool {
         var request = URLRequest(url: candidate.url)
         request.httpMethod = "GET"
         request.timeoutInterval = 18
@@ -932,26 +1137,139 @@ actor NativeVideoResolver {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await validationSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("NativeVideoResolver: candidate validation failed, invalid response: \(candidate.url)")
                 return false
             }
             cookieJar.storeCookies(from: httpResponse, for: candidate.url)
+            if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
+                print("NativeVideoResolver: candidate validation failed, \(signal.displayName): \(candidate.url)")
+                return false
+            }
             guard (200...299).contains(httpResponse.statusCode) else {
                 print("NativeVideoResolver: candidate validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
                 return false
             }
             let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") {
+            let inspection = HLSPlaylistInspector.inspect(text, url: candidate.url)
+            if inspection.isLikelyPlayable {
                 return true
             }
-            print("NativeVideoResolver: candidate validation failed, response is not HLS: \(candidate.url)")
+            print("NativeVideoResolver: candidate validation failed, \(inspection.reason ?? "unplayable playlist"): \(candidate.url)")
             return false
         } catch {
+            if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
+               let upgradedURL = httpsURL(for: candidate.url) {
+                let upgradedCandidate = NativeVideoCandidate(
+                    url: upgradedURL,
+                    referer: candidate.referer,
+                    priority: candidate.priority
+                )
+                return await validatePlaylistCandidate(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
+            }
             print("NativeVideoResolver: candidate validation failed: \(candidate.url), error: \(error)")
             return false
         }
+    }
+
+    private func validateDirectMediaCandidate(_ candidate: NativeVideoCandidate, plugin: PluginRule, cookieJar: MediaCookieJar) async -> Bool {
+        var request = URLRequest(url: candidate.url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        for (name, value) in playbackHeaders(plugin: plugin, referer: candidate.referer, requestURL: candidate.url, cookieJar: cookieJar) where !value.isEmpty {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+
+        do {
+            let (_, response) = try await validationSession.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("NativeVideoResolver: direct candidate validation failed, invalid response: \(candidate.url)")
+                return false
+            }
+            cookieJar.storeCookies(from: httpResponse, for: candidate.url)
+            if (200...399).contains(httpResponse.statusCode), !isHTMLLikeContentType(httpResponse) {
+                return true
+            }
+            if [403, 405, 501].contains(httpResponse.statusCode) {
+                return await validateDirectMediaCandidateWithRange(candidate, plugin: plugin, cookieJar: cookieJar)
+            }
+            print("NativeVideoResolver: direct candidate validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
+            return false
+        } catch {
+            if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
+               let upgradedURL = httpsURL(for: candidate.url) {
+                let upgradedCandidate = NativeVideoCandidate(
+                    url: upgradedURL,
+                    referer: candidate.referer,
+                    priority: candidate.priority
+                )
+                return await validateDirectMediaCandidate(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
+            }
+            print("NativeVideoResolver: direct candidate validation failed: \(candidate.url), error: \(error)")
+            return false
+        }
+    }
+
+    private func validateDirectMediaCandidateWithRange(_ candidate: NativeVideoCandidate, plugin: PluginRule, cookieJar: MediaCookieJar) async -> Bool {
+        var request = URLRequest(url: candidate.url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 12
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        for (name, value) in playbackHeaders(plugin: plugin, referer: candidate.referer, requestURL: candidate.url, cookieJar: cookieJar) where !value.isEmpty {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+
+        do {
+            let (_, response) = try await validationSession.bytes(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("NativeVideoResolver: direct range validation failed, invalid response: \(candidate.url)")
+                return false
+            }
+            cookieJar.storeCookies(from: httpResponse, for: candidate.url)
+            if (200...399).contains(httpResponse.statusCode), !isHTMLLikeContentType(httpResponse) {
+                return true
+            }
+            print("NativeVideoResolver: direct range validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
+            return false
+        } catch {
+            if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
+               let upgradedURL = httpsURL(for: candidate.url) {
+                let upgradedCandidate = NativeVideoCandidate(
+                    url: upgradedURL,
+                    referer: candidate.referer,
+                    priority: candidate.priority
+                )
+                return await validateDirectMediaCandidateWithRange(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
+            }
+            print("NativeVideoResolver: direct range validation failed: \(candidate.url), error: \(error)")
+            return false
+        }
+    }
+
+    private func httpsURL(for url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "http",
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.scheme = "https"
+        return components.url
+    }
+
+    private func shouldRetryByUpgradingToHTTPS(error: Error, url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http" else { return false }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection
+    }
+
+    private func isHTMLLikeContentType(_ response: HTTPURLResponse) -> Bool {
+        let contentType = (response.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        return contentType.contains("text/html") || contentType.contains("application/xhtml")
     }
 
     private func videoSource(url: URL, plugin: PluginRule, referer: String?, cookieJar: MediaCookieJar) -> VideoSource {
@@ -969,6 +1287,14 @@ actor NativeVideoResolver {
         headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         headers["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8"
         headers["Connection"] = "keep-alive"
+        headers["Cache-Control"] = "no-cache"
+        headers["DNT"] = "1"
+        headers["Pragma"] = "no-cache"
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+        headers["Sec-Fetch-Site"] = secFetchSite(requestURL: requestURL, referer: referer, plugin: plugin)
+        headers["Sec-Fetch-User"] = "?1"
+        headers["Upgrade-Insecure-Requests"] = "1"
         return headers
     }
 
@@ -1058,6 +1384,15 @@ actor NativeVideoResolver {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
+    private func formURLEncodedBody(_ items: [(String, String)]) -> Data {
+        let body = items
+            .map { key, value in
+                "\(percentEncodedQueryValue(key))=\(percentEncodedQueryValue(value))"
+            }
+            .joined(separator: "&")
+        return Data(body.utf8)
+    }
+
     private func jsStringLiteral(_ value: String) -> String {
         (try? String(data: JSONEncoder().encode(value), encoding: .utf8)) ?? "\"\""
     }
@@ -1113,6 +1448,8 @@ actor NativeVideoResolver {
             "googlesyndication",
             "doubleclick",
             "adtrafficquality",
+            "consumer.huawei.com",
+            "tvc-video.mp4",
             "prestrain",
             "devtools-detector",
             ".jpg",
@@ -1159,10 +1496,40 @@ actor NativeVideoResolver {
         return "\(scheme)://\(host)"
     }
 
+    private func secFetchSite(requestURL: URL, referer: String?, plugin: PluginRule) -> String {
+        let refererHost = referer.flatMap { URL(string: $0)?.host?.lowercased() }
+            ?? URL(string: plugin.baseURL)?.host?.lowercased()
+        guard let requestHost = requestURL.host?.lowercased(),
+              let refererHost else {
+            return "same-origin"
+        }
+
+        if requestHost == refererHost {
+            return "same-origin"
+        }
+
+        return rootDomain(for: requestHost) == rootDomain(for: refererHost) ? "same-site" : "cross-site"
+    }
+
+    private func rootDomain(for host: String) -> String {
+        let parts = host.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return host }
+        return parts.suffix(2).joined(separator: ".")
+    }
+
+    private func videoSourceError(for signal: WebChallengeSignal) -> VideoSourceError {
+        switch signal.kind {
+        case .challenge:
+            return .challengePage(vendor: signal.vendor)
+        case .captcha:
+            return .captchaRequired(vendor: signal.vendor)
+        }
+    }
+
     private var defaultMediaPatterns: [String] {
         [
-            #"((?:https?:)?//[^"'\s<>\\]+?(?:\.m3u8|\.mp4|\.m4v|\.mov)(?:\?[^"'\s<>\\]*)?)"#,
-            #"["']([^"']+(?:\.m3u8|\.mp4|\.m4v|\.mov)[^"']*)["']"#,
+            #"((?:https?:)?//[^"'\s<>\\]+?\.(?:m3u8|mp4|m4v|mov)(?:\?[^"'\s<>\\]*)?)"#,
+            #"["']([^"']+\.(?:m3u8|mp4|m4v|mov)(?:[?#][^"']*)?)["']"#,
             #"(?:url|src|file|playurl|play_url|videoUrl|video_url)\s*[:=]\s*["']([^"']+)["']"#
         ]
     }
@@ -1197,6 +1564,13 @@ private struct NativePlayerConfig {
     let url: String
     let from: String?
     let encrypt: Int?
+}
+
+private struct Gugu3MizhiRequest {
+    let url: String
+    let time: String
+    let key: String
+    let vkey: String
 }
 
 private struct BaimaoPlaybackRequest: Decodable {

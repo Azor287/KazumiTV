@@ -32,11 +32,19 @@ actor VideoSourceResolver {
             return videoSource
         } catch {
             print("VideoSourceResolver: 原生解析失败: \(error)")
-            guard preferServerProxy else {
-                if case VideoSourceError.invalidURL = error {
-                    throw error
+            if SettingsRepository.shared.privateWebResolverEnabled {
+                do {
+                    return try await resolveWithPrivateWebView(pageURL: pageURL, plugin: plugin)
+                } catch let privateError {
+                    print("VideoSourceResolver: 私有 WebView 解析失败: \(privateError)")
+                    if !preferServerProxy {
+                        throw localModeError(nativeError: privateError, plugin: plugin)
+                    }
                 }
-                throw VideoSourceError.externalResolverRequired
+            }
+
+            guard preferServerProxy else {
+                throw localModeError(nativeError: error, plugin: plugin)
             }
 
             print("VideoSourceResolver: 尝试外部后备解析服务")
@@ -49,6 +57,17 @@ actor VideoSourceResolver {
                 throw serverError
             }
         }
+    }
+
+    private func resolveWithPrivateWebView(pageURL: String, plugin: PluginRule) async throws -> VideoSource {
+        guard SettingsRepository.shared.privateWebResolverEnabled else {
+            throw VideoSourceError.privateWebViewUnavailable
+        }
+
+        print("VideoSourceResolver: 尝试实验性私有 WebView 解析")
+        let videoSource = try await PrivateWebViewResolver.shared.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+        print("VideoSourceResolver: 私有 WebView 解析成功: \(videoSource.url)")
+        return videoSource
     }
 
     // MARK: - 外部后备解析
@@ -72,6 +91,39 @@ actor VideoSourceResolver {
         let videoSource = try await serverAPI.scrapeVideo(url: pageURL, plugin: plugin.name)
         print("VideoSourceResolver.resolveWithServer: 抓取成功，videoSource.url = \(videoSource.url)")
         return videoSource
+    }
+
+    private func localModeError(nativeError error: Error, plugin: PluginRule) -> Error {
+        if let sourceError = error as? VideoSourceError {
+            switch sourceError {
+            case .invalidURL,
+                 .challengePage(_),
+                 .captchaRequired(_),
+                 .jsRenderedOnly,
+                 .emptyHTML,
+                 .timeout,
+                 .cancelled,
+                 .privateWebViewUnavailable,
+                 .privateWebViewFailed(_):
+                return sourceError
+            case .videoSourceNotFound where plugin.playbackCapability.requiresBrowserRuntime:
+                return VideoSourceError.jsRenderedOnly
+            default:
+                return VideoSourceError.externalResolverRequired
+            }
+        }
+
+        if let apiError = error as? APIError,
+           case .webChallenge(let signal) = apiError {
+            switch signal.kind {
+            case .challenge:
+                return VideoSourceError.challengePage(vendor: signal.vendor)
+            case .captcha:
+                return VideoSourceError.captchaRequired(vendor: signal.vendor)
+            }
+        }
+
+        return VideoSourceError.externalResolverRequired
     }
 
     // MARK: - Direct Resolution

@@ -69,6 +69,13 @@ class AVPlayerController: ObservableObject {
         }
 
         var options: [String: Any] = [:]
+        var assetHeaders = playbackSource.headers
+        if let referer = playbackSource.referer, !referer.isEmpty {
+            assetHeaders["Referer"] = referer
+        }
+        if !assetHeaders.isEmpty {
+            options["AVURLAssetHTTPHeaderFieldsKey"] = assetHeaders
+        }
 
         if let mimeType = inferredMIMEType(for: playbackSource.url) ?? inferredMIMEType(for: source.url) {
             options["AVURLAssetOutOfBandMIMETypeKey"] = mimeType

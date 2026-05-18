@@ -54,6 +54,7 @@ class PlayerViewModel: ObservableObject {
     private var controlsTimer: Timer?
     private var danmakuLoadingTask: Task<Void, Never>?
     private var loadGeneration: UInt64 = 0
+    private let videoResolveTimeoutNanoseconds: UInt64 = 20_000_000_000
 
     // MARK: - Init
 
@@ -187,7 +188,11 @@ class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation) else { return }
 
             print("PlayerViewModel.resolveWithPageURL: 调用 resolver.resolveVideoURL")
-            let videoSource = try await resolver.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+            let videoSource = try await resolveVideoURLWithTimeout(
+                resolver: resolver,
+                pageURL: pageURL,
+                plugin: plugin
+            )
             guard isCurrentLoad(generation) else { return }
             print("PlayerViewModel.resolveWithPageURL: 解析成功，videoSource.url = \(videoSource.url)")
             loadResolvedVideo(source: videoSource, resumePosition: resumePosition)
@@ -196,6 +201,31 @@ class PlayerViewModel: ObservableObject {
             print("PlayerViewModel.resolveWithPageURL: 视频解析失败: \(error)")
             isBuffering = false
             self.error = error
+        }
+    }
+
+    private func resolveVideoURLWithTimeout(
+        resolver: VideoSourceResolver,
+        pageURL: String,
+        plugin: PluginRule
+    ) async throws -> VideoSource {
+        let timeoutNanoseconds = SettingsRepository.shared.privateWebResolverEnabled
+            ? 36_000_000_000
+            : videoResolveTimeoutNanoseconds
+        return try await withThrowingTaskGroup(of: VideoSource.self) { group in
+            group.addTask {
+                try await resolver.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw PlayerError.playbackTimeout
+            }
+            defer { group.cancelAll() }
+
+            guard let source = try await group.next() else {
+                throw CancellationError()
+            }
+            return source
         }
     }
 
