@@ -9,17 +9,3 @@ updates:
       github-actions:
         patterns:
           - "*"
-
-  - package-ecosystem: pip
-    directory: /kazumi-server
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 4
-    groups:
-      python-low-risk:
-        patterns:
-          - beautifulsoup4
-          - requests
-        update-types:
-          - minor
-          - patch

@@ -8,7 +8,7 @@ KazumiTV 是 [Kazumi](https://github.com/Predidit/Kazumi) 的独立 Apple TV/tvO
 
 请优先通过 Pull Request 提交改动：
 
-1. 从 `main` 创建短期分支，例如 `feature/player-controls` 或 `fix/server-timeout`。
+1. 从 `main` 创建短期分支，例如 `feature/player-controls` 或 `fix/playback-timeout`。
 2. 保持改动聚焦，避免把无关重构混在同一个 PR。
 3. 提交前运行基础检查。
 4. 在 PR 中说明改动内容、测试方式和已知风险。
@@ -32,10 +32,15 @@ xcodebuild -project KazumiTV.xcodeproj \
   build
 ```
 
-检查 Python 代理服务：
+编译 App 与测试目标：
 
 ```bash
-python3 -m compileall kazumi-server/api_server.py
+xcodebuild -project KazumiTV.xcodeproj \
+  -scheme KazumiTV \
+  -configuration Debug \
+  -destination 'generic/platform=tvOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO \
+  build-for-testing
 ```
 
 ## 贡献范围
@@ -45,7 +50,7 @@ python3 -m compileall kazumi-server/api_server.py
 - tvOS 交互和焦点体验优化
 - Swift/SwiftUI 架构改进
 - 播放器、弹幕、收藏、历史等功能修复
-- Python 代理服务稳定性改进
+- 本机解析与 loopback 播放链路改进
 - 文档、构建脚本、CI 改进
 
 请不要提交：
