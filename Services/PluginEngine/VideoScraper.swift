@@ -268,10 +268,8 @@ enum VideoSourceError: LocalizedError {
     case extractionFailed
     case videoSourceNotFound
     case webViewRequired
-    case externalResolverRequired
     case timeout
     case cancelled
-    case serverUnavailable
     case emptyHTML
     case challengePage(vendor: String?)
     case captchaRequired(vendor: String?)
@@ -290,15 +288,11 @@ enum VideoSourceError: LocalizedError {
         case .videoSourceNotFound:
             return "未找到视频源"
         case .webViewRequired:
-            return "此来源需要 WebView（tvOS 不支持）"
-        case .externalResolverRequired:
-            return "该来源需要真实浏览器解析，当前无外部代理模式不支持。"
+            return "此来源需要动态网页解析，请在设置中启用。"
         case .timeout:
             return "视频提取超时"
         case .cancelled:
             return "视频提取已取消"
-        case .serverUnavailable:
-            return "外部解析服务不可用"
         case .emptyHTML:
             return "来源返回空页面，可能被站点拦截或规则已失效。"
         case .challengePage(let vendor):
@@ -308,11 +302,11 @@ enum VideoSourceError: LocalizedError {
             let name = vendor ?? "该来源"
             return "\(name) 正在要求验证码验证，Apple TV 本机模式不会自动处理验证码。"
         case .jsRenderedOnly:
-            return "该来源需要网页前端渲染后才能获得播放地址，当前本机解析模式不支持完整浏览器运行时。"
+            return "该来源需要网页前端渲染后才能获得播放地址，请启用本机动态网页解析。"
         case .privateWebViewUnavailable:
-            return "实验性私有 WebView 解析不可用。"
+            return "本机动态网页解析在当前系统上不可用。"
         case .privateWebViewFailed(let message):
-            return message.isEmpty ? "实验性私有 WebView 解析失败。" : "实验性私有 WebView 解析失败：\(message)"
+            return message.isEmpty ? "本机动态网页解析失败。" : "本机动态网页解析失败：\(message)"
         }
     }
 }

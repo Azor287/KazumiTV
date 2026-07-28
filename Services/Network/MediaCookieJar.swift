@@ -103,7 +103,13 @@ final class MediaCookieJar {
         }
 
         let requestPath = url.path.isEmpty ? "/" : url.path
-        return requestPath.hasPrefix(cookie.path)
+        let cookiePath = cookie.path.isEmpty ? "/" : cookie.path
+        guard requestPath.hasPrefix(cookiePath) else { return false }
+        if cookiePath.hasSuffix("/") || requestPath.count == cookiePath.count {
+            return true
+        }
+        let boundary = requestPath.index(requestPath.startIndex, offsetBy: cookiePath.count)
+        return requestPath[boundary] == "/"
     }
 
     private func isExpired(_ cookie: HTTPCookie) -> Bool {

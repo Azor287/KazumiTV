@@ -1972,12 +1972,10 @@ final class SourcePlaybackPreferenceStore {
     func sortedPluginTabs(_ tabs: [SourcePluginTab]) -> [SourcePluginTab] {
         tabs.enumerated()
             .sorted { lhs, rhs in
-                if !SettingsRepository.shared.serverProxyEnabled {
-                    let lhsRank = localModeTabRank(lhs.element)
-                    let rhsRank = localModeTabRank(rhs.element)
-                    if lhsRank != rhsRank {
-                        return lhsRank < rhsRank
-                    }
+                let lhsRank = localModeTabRank(lhs.element)
+                let rhsRank = localModeTabRank(rhs.element)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
                 }
 
                 let lhsScore = pluginScore(lhs.element.plugin.name)
@@ -2003,14 +2001,7 @@ final class SourcePlaybackPreferenceStore {
     }
 
     func preferredSuccessfulPluginName(in tabs: [SourcePluginTab]) -> String? {
-        let orderedTabs = sortedPluginTabs(tabs)
-        if !SettingsRepository.shared.serverProxyEnabled {
-            return orderedTabs.first { tab in
-                tab.plugin.playbackCapability.supportsLocalPlayback && tabHasSearchResults(tab)
-            }?.plugin.name
-        }
-
-        return orderedTabs.first(where: tabHasSearchResults)?.plugin.name
+        sortedPluginTabs(tabs).first(where: tabHasSearchResults)?.plugin.name
     }
 
     func supportsNativeLoopbackPlayback(_ pluginName: String) -> Bool {
@@ -2129,17 +2120,15 @@ final class SourcePlaybackPreferenceStore {
 
         let capabilityScore = capability.searchWeight * 20 + capability.stability * 20
         let localModeScore: Double
-        if SettingsRepository.shared.serverProxyEnabled {
-            localModeScore = 0
-        } else if capability.supportsLocalPlayback {
+        if capability.supportsLocalPlayback {
             localModeScore = manualPriority + 1_000
         } else if capability.requiresBrowserRuntime {
-            localModeScore = -500
+            localModeScore = SettingsRepository.shared.privateWebResolverEnabled ? -100 : -500
         } else {
             localModeScore = capabilityScore
         }
 
-        let captchaPenalty: Double = !SettingsRepository.shared.serverProxyEnabled && capability.captchaRisk == .high ? 80 : 0
+        let captchaPenalty: Double = capability.captchaRisk == .high ? 80 : 0
         return localModeScore + capabilityScore + learnedScore - captchaPenalty
     }
 

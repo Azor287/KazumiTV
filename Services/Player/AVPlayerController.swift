@@ -56,9 +56,9 @@ class AVPlayerController: ObservableObject {
             playbackSource = try LocalHLSProxy.shared.proxiedSource(for: source)
             if playbackSource.url != source.url {
                 if playbackSource.url.host == "127.0.0.1" || playbackSource.url.host == "localhost" {
-                    print("AVPlayerController.loadVideo: 使用真机本地 loopback 播放URL: \(playbackSource.url.absoluteString)")
+                    print("AVPlayerController.loadVideo: 使用真机本地 loopback 播放URL: \(URLLogSanitizer.redacted(playbackSource.url))")
                 } else {
-                    print("AVPlayerController.loadVideo: 使用直连播放URL: \(playbackSource.url.absoluteString)")
+                    print("AVPlayerController.loadVideo: 使用直连播放URL: \(URLLogSanitizer.redacted(playbackSource.url))")
                 }
             }
         } catch {
@@ -79,7 +79,7 @@ class AVPlayerController: ObservableObject {
 
         if let mimeType = inferredMIMEType(for: playbackSource.url) ?? inferredMIMEType(for: source.url) {
             options["AVURLAssetOutOfBandMIMETypeKey"] = mimeType
-            print("AVPlayerController.loadVideo: 使用 MIME type \(mimeType), url = \(playbackSource.url.absoluteString)")
+            print("AVPlayerController.loadVideo: 使用 MIME type \(mimeType), url = \(URLLogSanitizer.redacted(playbackSource.url))")
         }
 
         let asset = AVURLAsset(url: playbackSource.url, options: options)
@@ -502,7 +502,6 @@ enum PlayerError: LocalizedError {
     case loadFailed
     case playbackFailed
     case missingEpisodeURL
-    case serverProxyDisabled
     case playbackTimeout
     case resourceUnavailable
 
@@ -516,8 +515,6 @@ enum PlayerError: LocalizedError {
             return "视频播放失败"
         case .missingEpisodeURL:
             return "当前章节没有插件播放页地址。请从搜索里的插件结果进入详情页，或先为该番剧匹配可播放源。"
-        case .serverProxyDisabled:
-            return "该来源需要真实浏览器解析，当前无外部代理模式不支持。"
         case .playbackTimeout:
             return "当前线路启动超时，暂时无法播放。"
         case .resourceUnavailable:

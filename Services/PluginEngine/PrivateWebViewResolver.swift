@@ -2,14 +2,19 @@
 //  PrivateWebViewResolver.swift
 //  KazumiTV
 //
-//  Experimental resolver for side-loaded builds. It uses a private tvOS
-//  UIWebView class when present, so this path must stay optional.
+//  Local dynamic-page resolver for side-loaded builds. It loads WebKit at
+//  runtime and executes pages that cannot be resolved by HTTP parsing alone.
 //
 
 import Foundation
 import UIKit
+import Darwin
 
 #if KAZUMI_ENABLE_PRIVATE_WEBVIEW_RESOLVER
+@objc private protocol PrivateWKUserScript {
+    init(source: String, injectionTime: Int, forMainFrameOnly: Bool)
+}
+
 @MainActor
 final class PrivateWebViewResolver {
     static let shared = PrivateWebViewResolver()
@@ -24,7 +29,7 @@ final class PrivateWebViewResolver {
             throw VideoSourceError.privateWebViewUnavailable
         }
         guard activeResolution == nil else {
-            throw VideoSourceError.privateWebViewFailed("已有私有 WebView 解析任务正在运行")
+            throw VideoSourceError.privateWebViewFailed("已有本机动态网页解析任务正在运行")
         }
         guard let url = URL(string: pageURL) else {
             throw VideoSourceError.invalidURL
@@ -53,6 +58,11 @@ final class PrivateWebViewResolver {
 
 @MainActor
 private final class PrivateWebViewResolution: NSObject {
+    private enum RuntimeKind {
+        case wkWebView
+        case uiWebView
+    }
+
     private let pageURL: URL
     private let plugin: PluginRule
     private let continuation: CheckedContinuation<VideoSource, Error>
@@ -61,9 +71,13 @@ private final class PrivateWebViewResolution: NSObject {
     private let pollIntervalNanoseconds: UInt64 = 900_000_000
 
     private var webView: NSObject?
+    private var runtimeKind: RuntimeKind?
+    private var webKitHandle: UnsafeMutableRawPointer?
     private var pollTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
+    private var isEvaluatingJavaScript = false
     private var rejectedCandidateURLs = Set<String>()
+    private var pendingCandidateValues: [String] = []
     private var isCompleted = false
 
     init(
@@ -79,30 +93,27 @@ private final class PrivateWebViewResolution: NSObject {
     }
 
     func start() {
-        guard let webViewClass = NSClassFromString("UIWebView") as? NSObject.Type else {
+        let instance: NSObject
+        if let wkWebView = makeWKWebView() {
+            instance = wkWebView
+            runtimeKind = .wkWebView
+        } else if let uiWebView = makeUIWebView() {
+            instance = uiWebView
+            runtimeKind = .uiWebView
+        } else {
             complete(.failure(VideoSourceError.privateWebViewUnavailable))
             return
         }
 
-        let instance = webViewClass.init()
-        guard let view = instance as? UIView else {
-            complete(.failure(VideoSourceError.privateWebViewFailed("UIWebView 私有类不是 UIView")))
-            return
-        }
-
         webView = instance
-        view.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
-        view.alpha = 0.01
-        view.isUserInteractionEnabled = false
-
-        let setDelegateSelector = NSSelectorFromString("setDelegate:")
-        if instance.responds(to: setDelegateSelector) {
-            _ = instance.perform(setDelegateSelector, with: self)
+        guard attachToActiveWindow(instance) else {
+            complete(.failure(VideoSourceError.privateWebViewFailed("无法将本机网页运行时挂载到活动窗口")))
+            return
         }
 
         let loadSelector = NSSelectorFromString("loadRequest:")
         guard instance.responds(to: loadSelector) else {
-            complete(.failure(VideoSourceError.privateWebViewFailed("UIWebView 不支持 loadRequest:")))
+            complete(.failure(VideoSourceError.privateWebViewFailed("本机网页运行时不支持 loadRequest:")))
             return
         }
 
@@ -113,6 +124,90 @@ private final class PrivateWebViewResolution: NSObject {
         }
         _ = instance.perform(loadSelector, with: request)
         startPolling()
+    }
+
+    private func makeWKWebView() -> NSObject? {
+        webKitHandle = dlopen("/System/Library/Frameworks/WebKit.framework/WebKit", RTLD_NOW)
+        guard let webViewClass = NSClassFromString("WKWebView") as? NSObject.Type else {
+            closeWebKitHandle()
+            return nil
+        }
+
+        let instance = webViewClass.init()
+        guard let configuration = instance.value(forKey: "configuration") as? NSObject,
+              let contentController = configuration.value(forKey: "userContentController") as? NSObject,
+              installInterceptionScript(in: contentController) else {
+            closeWebKitHandle()
+            return nil
+        }
+
+        configuration.setValue(true, forKey: "allowsInlineMediaPlayback")
+        let setNavigationDelegate = NSSelectorFromString("setNavigationDelegate:")
+        guard instance.responds(to: setNavigationDelegate) else {
+            closeWebKitHandle()
+            return nil
+        }
+        _ = instance.perform(setNavigationDelegate, with: self)
+
+        let setCustomUserAgent = NSSelectorFromString("setCustomUserAgent:")
+        if instance.responds(to: setCustomUserAgent) {
+            _ = instance.perform(setCustomUserAgent, with: userAgent)
+        }
+        return instance
+    }
+
+    private func makeUIWebView() -> NSObject? {
+        guard let webViewClass = NSClassFromString("UIWebView") as? NSObject.Type else {
+            return nil
+        }
+        let instance = webViewClass.init()
+        let setDelegateSelector = NSSelectorFromString("setDelegate:")
+        guard instance.responds(to: setDelegateSelector) else {
+            return nil
+        }
+        _ = instance.perform(setDelegateSelector, with: self)
+        return instance
+    }
+
+    private func installInterceptionScript(in contentController: NSObject) -> Bool {
+        guard let userScriptClass = NSClassFromString("WKUserScript") else {
+            return false
+        }
+        let userScriptType = unsafeBitCast(userScriptClass, to: PrivateWKUserScript.Type.self)
+        let userScript = userScriptType.init(
+            source: interceptionScript(),
+            injectionTime: 0,
+            forMainFrameOnly: false
+        )
+
+        let addUserScript = NSSelectorFromString("addUserScript:")
+        let addMessageHandler = NSSelectorFromString("addScriptMessageHandler:name:")
+        guard contentController.responds(to: addUserScript),
+              contentController.responds(to: addMessageHandler) else {
+            return false
+        }
+        _ = contentController.perform(addUserScript, with: userScript)
+        _ = contentController.perform(addMessageHandler, with: self, with: "KazumiMediaIntercept")
+        return true
+    }
+
+    private func attachToActiveWindow(_ instance: NSObject) -> Bool {
+        guard let view = instance as? UIView,
+              let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first,
+              let rootView = window.rootViewController?.view else {
+            return false
+        }
+
+        view.frame = rootView.bounds
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.alpha = 0.01
+        view.isUserInteractionEnabled = false
+        rootView.addSubview(view)
+        rootView.sendSubviewToBack(view)
+        return true
     }
 
     func cancel() {
@@ -130,6 +225,34 @@ private final class PrivateWebViewResolution: NSObject {
         print("PrivateWebViewResolver: page load error \(error.localizedDescription)")
     }
 
+    @objc(userContentController:didReceiveScriptMessage:)
+    private func userContentController(_ userContentController: AnyObject, didReceive message: AnyObject) {
+        guard !isCompleted, let value = message.value(forKey: "body") as? String else {
+            return
+        }
+        enqueueCandidateValues([value])
+    }
+
+    @objc(webView:didFinishNavigation:)
+    private func webView(_ webView: AnyObject, didFinish navigation: AnyObject?) {
+        attemptExtraction()
+    }
+
+    @objc(webView:didFailProvisionalNavigation:withError:)
+    private func webView(_ webView: AnyObject, didFailProvisionalNavigation navigation: AnyObject?, withError error: NSError) {
+        handleWKNavigationError(error)
+    }
+
+    @objc(webView:didFailNavigation:withError:)
+    private func webView(_ webView: AnyObject, didFail navigation: AnyObject?, withError error: NSError) {
+        handleWKNavigationError(error)
+    }
+
+    private func handleWKNavigationError(_ error: NSError) {
+        guard error.code != NSURLErrorCancelled else { return }
+        print("PrivateWebViewResolver: WKWebView page load error \(error.localizedDescription)")
+    }
+
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
@@ -145,15 +268,45 @@ private final class PrivateWebViewResolution: NSObject {
     }
 
     private func attemptExtraction() {
-        guard !isCompleted,
-              let webView,
-              let json = evaluateJavaScript(extractionScript(), in: webView) else {
+        guard !isCompleted, let webView else {
             return
         }
 
-        let urls = candidateURLs(from: json)
+        switch runtimeKind {
+        case .wkWebView:
+            evaluateJavaScriptAsync(extractionScript(), in: webView)
+        case .uiWebView:
+            guard let json = evaluateJavaScriptSynchronously(extractionScript(), in: webView) else {
+                return
+            }
+            enqueueJSONCandidates(json)
+        case .none:
+            return
+        }
+    }
+
+    private func enqueueJSONCandidates(_ json: String) {
+        guard let data = json.data(using: .utf8),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return
+        }
+        enqueueCandidateValues(values)
+    }
+
+    private func enqueueCandidateValues(_ values: [String]) {
+        guard !isCompleted else { return }
+        pendingCandidateValues.append(contentsOf: values)
+        validatePendingCandidatesIfNeeded()
+    }
+
+    private func validatePendingCandidatesIfNeeded() {
+        guard !isCompleted, validationTask == nil, let webView else { return }
+        let values = pendingCandidateValues
+        pendingCandidateValues.removeAll(keepingCapacity: true)
+
+        let urls = candidateURLs(from: values)
             .filter { !rejectedCandidateURLs.contains($0.absoluteString) }
-        guard !urls.isEmpty, validationTask == nil else { return }
+        guard !urls.isEmpty else { return }
 
         let candidates = urls.map {
             PrivateWebViewCandidate(
@@ -167,7 +320,7 @@ private final class PrivateWebViewResolution: NSObject {
                 if await PrivateWebViewMediaProbe.isPlayable(url: candidate.url, headers: candidate.headers) {
                     let source = VideoSource(
                         url: candidate.url,
-                        quality: "私有WebView",
+                        quality: "本机网页",
                         pluginName: self.plugin.name,
                         referer: self.pageURL.absoluteString,
                         headers: candidate.headers
@@ -178,10 +331,11 @@ private final class PrivateWebViewResolution: NSObject {
                 self.rejectedCandidateURLs.insert(candidate.url.absoluteString)
             }
             self.validationTask = nil
+            self.validatePendingCandidatesIfNeeded()
         }
     }
 
-    private func evaluateJavaScript(_ script: String, in webView: NSObject) -> String? {
+    private func evaluateJavaScriptSynchronously(_ script: String, in webView: NSObject) -> String? {
         let selector = NSSelectorFromString("stringByEvaluatingJavaScriptFromString:")
         guard webView.responds(to: selector),
               let result = webView.perform(selector, with: script)?.takeUnretainedValue() else {
@@ -190,12 +344,25 @@ private final class PrivateWebViewResolution: NSObject {
         return result as? String
     }
 
-    private func candidateURLs(from json: String) -> [URL] {
-        guard let data = json.data(using: .utf8),
-              let values = try? JSONSerialization.jsonObject(with: data) as? [String] else {
-            return []
-        }
+    private func evaluateJavaScriptAsync(_ script: String, in webView: NSObject) {
+        guard !isEvaluatingJavaScript else { return }
+        let selector = NSSelectorFromString("evaluateJavaScript:completionHandler:")
+        guard webView.responds(to: selector) else { return }
 
+        isEvaluatingJavaScript = true
+        let completion: @convention(block) (Any?, Error?) -> Void = { [weak self] result, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isEvaluatingJavaScript = false
+                if let json = result as? String {
+                    self.enqueueJSONCandidates(json)
+                }
+            }
+        }
+        _ = webView.perform(selector, with: script, with: completion)
+    }
+
+    private func candidateURLs(from values: [String]) -> [URL] {
         var seen = Set<String>()
         var urls: [URL] = []
 
@@ -266,12 +433,13 @@ private final class PrivateWebViewResolution: NSObject {
     }
 
     private func requestHeaders() -> [String: String] {
+        let referer = plugin.referer.flatMap { $0.isEmpty ? nil : $0 } ?? plugin.baseURL
         var headers: [String: String] = [
             "User-Agent": userAgent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
-            "Referer": plugin.referer?.isEmpty == false ? plugin.referer! : plugin.baseURL
+            "Referer": referer
         ]
         if let origin = originString(from: headers["Referer"] ?? plugin.baseURL) {
             headers["Origin"] = origin
@@ -301,7 +469,8 @@ private final class PrivateWebViewResolution: NSObject {
     }
 
     private func documentCookie(from webView: NSObject) -> String? {
-        evaluateJavaScript("document.cookie || ''", in: webView)?
+        guard runtimeKind == .uiWebView else { return nil }
+        return evaluateJavaScriptSynchronously("document.cookie || ''", in: webView)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nilIfEmpty
     }
@@ -346,6 +515,56 @@ private final class PrivateWebViewResolution: NSObject {
             return "\(scheme)://\(host):\(port)"
         }
         return "\(scheme)://\(host)"
+    }
+
+    private func interceptionScript() -> String {
+        """
+        (function() {
+          if (window.__KazumiMediaInterceptInstalled) return;
+          window.__KazumiMediaInterceptInstalled = true;
+          function post(value) {
+            if (!value) return;
+            try {
+              var raw = typeof value === 'string' ? value : (value.url || value.href || String(value));
+              if (raw) window.webkit.messageHandlers.KazumiMediaIntercept.postMessage(raw);
+            } catch (_) {}
+          }
+          var originalFetch = window.fetch;
+          if (originalFetch) {
+            window.fetch = function() {
+              post(arguments[0]);
+              return originalFetch.apply(this, arguments);
+            };
+          }
+          var originalOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function(method, url) {
+            post(url);
+            return originalOpen.apply(this, arguments);
+          };
+          var originalSetAttribute = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function(name, value) {
+            if (name === 'src' || name === 'href') post(value);
+            return originalSetAttribute.apply(this, arguments);
+          };
+          function hookSource(proto) {
+            if (!proto) return;
+            var descriptor = Object.getOwnPropertyDescriptor(proto, 'src');
+            if (!descriptor || !descriptor.set) return;
+            Object.defineProperty(proto, 'src', {
+              configurable: true,
+              enumerable: descriptor.enumerable,
+              get: descriptor.get ? function() { return descriptor.get.call(this); } : function() { return this.getAttribute('src'); },
+              set: function(value) {
+                post(value);
+                descriptor.set.call(this, value);
+              }
+            });
+          }
+          hookSource(typeof HTMLMediaElement !== 'undefined' ? HTMLMediaElement.prototype : null);
+          hookSource(typeof HTMLSourceElement !== 'undefined' ? HTMLSourceElement.prototype : null);
+          hookSource(typeof HTMLIFrameElement !== 'undefined' ? HTMLIFrameElement.prototype : null);
+        })();
+        """
     }
 
     private func extractionScript() -> String {
@@ -411,16 +630,49 @@ private final class PrivateWebViewResolution: NSObject {
         isCompleted = true
         pollTask?.cancel()
         validationTask?.cancel()
+        isEvaluatingJavaScript = false
+        pendingCandidateValues.removeAll()
         if let webView {
-            let setDelegateSelector = NSSelectorFromString("setDelegate:")
-            if webView.responds(to: setDelegateSelector) {
-                _ = webView.perform(setDelegateSelector, with: nil)
+            let stopLoading = NSSelectorFromString("stopLoading")
+            if webView.responds(to: stopLoading) {
+                _ = webView.perform(stopLoading)
+            }
+
+            switch runtimeKind {
+            case .wkWebView:
+                let setNavigationDelegate = NSSelectorFromString("setNavigationDelegate:")
+                if webView.responds(to: setNavigationDelegate) {
+                    _ = webView.perform(setNavigationDelegate, with: nil)
+                }
+                if let configuration = webView.value(forKey: "configuration") as? NSObject,
+                   let contentController = configuration.value(forKey: "userContentController") as? NSObject {
+                    let removeHandler = NSSelectorFromString("removeScriptMessageHandlerForName:")
+                    if contentController.responds(to: removeHandler) {
+                        _ = contentController.perform(removeHandler, with: "KazumiMediaIntercept")
+                    }
+                }
+            case .uiWebView:
+                let setDelegate = NSSelectorFromString("setDelegate:")
+                if webView.responds(to: setDelegate) {
+                    _ = webView.perform(setDelegate, with: nil)
+                }
+            case .none:
+                break
             }
         }
         (webView as? UIView)?.removeFromSuperview()
         webView = nil
+        runtimeKind = nil
+        closeWebKitHandle()
         onFinish()
         continuation.resume(with: result)
+    }
+
+    private func closeWebKitHandle() {
+        if let webKitHandle {
+            dlclose(webKitHandle)
+            self.webKitHandle = nil
+        }
     }
 }
 #else

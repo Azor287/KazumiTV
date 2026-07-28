@@ -47,8 +47,6 @@ final class SettingsRepository {
         case downloadDanmaku = "downloadDanmaku"
 
         // Network
-        case proxyEnable = "proxyEnable"
-        case proxyUrl = "proxyUrl"
         case privateWebResolverEnable = "privateWebResolverEnable"
 
         // Display
@@ -219,21 +217,9 @@ final class SettingsRepository {
         set { setBool(.privateMode, newValue) }
     }
 
-    /// 外部解析服务地址 (仅作为原生解析失败后的后备)
-    var serverProxyURL: String {
-        get { getString(.proxyUrl, defaultValue: "http://127.0.0.1:5001") }
-        set { setString(.proxyUrl, newValue) }
-    }
-
-    /// 是否启用外部解析后备服务
-    var serverProxyEnabled: Bool {
-        get { getBool(.proxyEnable, defaultValue: false) }
-        set { setBool(.proxyEnable, newValue) }
-    }
-
     /// 是否启用实验性私有 WebView 解析
     var privateWebResolverEnabled: Bool {
-        get { getBool(.privateWebResolverEnable, defaultValue: false) }
+        get { getBool(.privateWebResolverEnable, defaultValue: true) }
         set { setBool(.privateWebResolverEnable, newValue) }
     }
 
@@ -261,8 +247,6 @@ final class SettingsRepository {
             .downloadParallelSegments,
             .downloadDanmaku,
             .privateMode,
-            .proxyEnable,
-            .proxyUrl,
             .privateWebResolverEnable
         ] {
             remove(key)

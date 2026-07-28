@@ -145,14 +145,14 @@ class PlayerViewModel: ObservableObject {
     private func resolveVideoSource(for episode: Episode, resumePosition: TimeInterval? = nil, generation: UInt64) async {
         guard isCurrentLoad(generation) else { return }
         print("PlayerViewModel.resolveVideoSource: 开始解析视频源")
-        print("PlayerViewModel.resolveVideoSource: episode.pageURL = \(episode.pageURL ?? "nil")")
+        print("PlayerViewModel.resolveVideoSource: episode.pageURL = \(URLLogSanitizer.redacted(episode.pageURL))")
         print("PlayerViewModel.resolveVideoSource: episode.pluginName = \(episode.pluginName ?? "nil")")
         isBuffering = true
         error = nil
 
         // 如果 episode 有 pageURL，使用它来解析视频
         if let pageURL = episode.pageURL, !pageURL.isEmpty {
-            print("PlayerViewModel.resolveVideoSource: 使用 pageURL 解析: \(pageURL)")
+            print("PlayerViewModel.resolveVideoSource: 使用 pageURL 解析: \(URLLogSanitizer.redacted(pageURL))")
             await resolveWithPageURL(pageURL, pluginName: episode.pluginName, resumePosition: resumePosition, generation: generation)
             return
         }
@@ -165,10 +165,10 @@ class PlayerViewModel: ObservableObject {
 
     private func resolveWithPageURL(_ pageURL: String, pluginName: String?, resumePosition: TimeInterval? = nil, generation: UInt64) async {
         guard isCurrentLoad(generation) else { return }
-        print("PlayerViewModel.resolveWithPageURL: 开始解析 pageURL: \(pageURL), pluginName: \(pluginName ?? "nil")")
-        let settings = SettingsRepository.shared
-        print("PlayerViewModel.resolveWithPageURL: externalResolverEnabled = \(settings.serverProxyEnabled)")
-        print("PlayerViewModel.resolveWithPageURL: externalResolverURL = \(settings.serverProxyURL)")
+        print(
+            "PlayerViewModel.resolveWithPageURL: 开始本机解析 pageURL: "
+                + "\(URLLogSanitizer.redacted(pageURL)), pluginName: \(pluginName ?? "nil")"
+        )
 
         // 优先使用 tvOS 原生解析；外部解析服务只作为显式后备。
         do {
@@ -194,7 +194,10 @@ class PlayerViewModel: ObservableObject {
                 plugin: plugin
             )
             guard isCurrentLoad(generation) else { return }
-            print("PlayerViewModel.resolveWithPageURL: 解析成功，videoSource.url = \(videoSource.url)")
+            print(
+                "PlayerViewModel.resolveWithPageURL: 本机解析成功，videoSource.url = "
+                    + URLLogSanitizer.redacted(videoSource.url)
+            )
             loadResolvedVideo(source: videoSource, resumePosition: resumePosition)
         } catch {
             guard isCurrentLoad(generation) else { return }

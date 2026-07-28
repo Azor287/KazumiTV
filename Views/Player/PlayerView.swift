@@ -895,7 +895,7 @@ struct PlayerView: View {
                 return
             }
 
-            print("PlayerView: 播放启动长时间无进展，准备切换线路: \(activeEpisode.pageURL ?? "nil")")
+            print("PlayerView: 播放启动长时间无进展，准备切换线路: \(URLLogSanitizer.redacted(activeEpisode.pageURL))")
             recordPlaybackFailureIfNeeded()
 
             if await switchToNextRoadForCurrentEpisode() {
@@ -918,7 +918,7 @@ struct PlayerView: View {
         }
 
         playbackStartupTask?.cancel()
-        print("PlayerView: 播放失败，准备立即切换线路: \(activeEpisode.pageURL ?? "nil")")
+        print("PlayerView: 播放失败，准备立即切换线路: \(URLLogSanitizer.redacted(activeEpisode.pageURL))")
 
         if await switchToNextRoadForCurrentEpisode() {
             return

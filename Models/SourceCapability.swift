@@ -78,7 +78,7 @@ struct SourcePlaybackCapability: Equatable, Hashable {
 
     var badgeTitle: String? {
         if supportsLocalPlayback { return "本机" }
-        if requiresBrowserRuntime { return "需浏览器" }
+        if requiresBrowserRuntime { return "本机网页" }
         return nil
     }
 }

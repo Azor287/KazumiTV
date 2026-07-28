@@ -331,13 +331,13 @@ actor PluginManager {
     // MARK: - Rule Repository
 
     func fetchRepositoryIndex() async throws -> [PluginRepositoryItem] {
-        let data = try await downloadRepositoryFile(fileName: "index.json", pluginName: nil)
+        let data = try await downloadRepositoryFile(fileName: "index.json")
         return try JSONDecoder().decode([PluginRepositoryItem].self, from: data)
     }
 
     func fetchRepositoryPlugin(name: String) async throws -> PluginRule {
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        let data = try await downloadRepositoryFile(fileName: encodedName + ".json", pluginName: name)
+        let data = try await downloadRepositoryFile(fileName: encodedName + ".json")
         let plugin = try JSONDecoder().decode(PluginRule.self, from: data)
         guard Int(plugin.api) ?? 0 <= maxSupportedAPILevel else {
             throw PluginError.incompatibleAPI(plugin.api)
@@ -345,7 +345,7 @@ actor PluginManager {
         return plugin
     }
 
-    private func downloadRepositoryFile(fileName: String, pluginName: String?) async throws -> Data {
+    private func downloadRepositoryFile(fileName: String) async throws -> Data {
         var failureMessages: [String] = []
 
         for baseURL in repositoryBaseURLs {
@@ -361,20 +361,6 @@ actor PluginManager {
                 let message = error.localizedDescription
                 failureMessages.append("\(url.host ?? baseURL): \(message)")
                 print("PluginManager: 规则仓库直连失败 \(urlString): \(message)")
-            }
-        }
-
-        if SettingsRepository.shared.serverProxyEnabled {
-            do {
-                let serverAPI = ServerAPI.shared
-                if let pluginName {
-                    return try await serverAPI.fetchRuleRepositoryPlugin(name: pluginName)
-                }
-                return try await serverAPI.fetchRuleRepositoryIndex()
-            } catch {
-                let message = error.localizedDescription
-                failureMessages.append("external fallback: \(message)")
-                print("PluginManager: 规则仓库外部后备服务失败 \(fileName): \(message)")
             }
         }
 

@@ -119,7 +119,7 @@ actor NativeVideoResolver {
                     }
                 }
             } catch {
-                print("NativeVideoResolver: page fetch failed \(request.url): \(error)")
+                print("NativeVideoResolver: page fetch failed \(URLLogSanitizer.redacted(request.url)): \(error)")
             }
 
             if let best = await firstPlayableCandidate(from: candidates, plugin: plugin, cookieJar: cookieJar) {
@@ -1139,16 +1139,16 @@ actor NativeVideoResolver {
         do {
             let (data, response) = try await validationSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("NativeVideoResolver: candidate validation failed, invalid response: \(candidate.url)")
+                print("NativeVideoResolver: candidate validation failed, invalid response: \(URLLogSanitizer.redacted(candidate.url))")
                 return false
             }
             cookieJar.storeCookies(from: httpResponse, for: candidate.url)
             if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
-                print("NativeVideoResolver: candidate validation failed, \(signal.displayName): \(candidate.url)")
+                print("NativeVideoResolver: candidate validation failed, \(signal.displayName): \(URLLogSanitizer.redacted(candidate.url))")
                 return false
             }
             guard (200...299).contains(httpResponse.statusCode) else {
-                print("NativeVideoResolver: candidate validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
+                print("NativeVideoResolver: candidate validation failed, HTTP \(httpResponse.statusCode): \(URLLogSanitizer.redacted(candidate.url))")
                 return false
             }
             let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
@@ -1156,7 +1156,7 @@ actor NativeVideoResolver {
             if inspection.isLikelyPlayable {
                 return true
             }
-            print("NativeVideoResolver: candidate validation failed, \(inspection.reason ?? "unplayable playlist"): \(candidate.url)")
+            print("NativeVideoResolver: candidate validation failed, \(inspection.reason ?? "unplayable playlist"): \(URLLogSanitizer.redacted(candidate.url))")
             return false
         } catch {
             if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
@@ -1168,7 +1168,7 @@ actor NativeVideoResolver {
                 )
                 return await validatePlaylistCandidate(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
             }
-            print("NativeVideoResolver: candidate validation failed: \(candidate.url), error: \(error)")
+            print("NativeVideoResolver: candidate validation failed: \(URLLogSanitizer.redacted(candidate.url)), error: \(error)")
             return false
         }
     }
@@ -1186,7 +1186,7 @@ actor NativeVideoResolver {
         do {
             let (_, response) = try await validationSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("NativeVideoResolver: direct candidate validation failed, invalid response: \(candidate.url)")
+                print("NativeVideoResolver: direct candidate validation failed, invalid response: \(URLLogSanitizer.redacted(candidate.url))")
                 return false
             }
             cookieJar.storeCookies(from: httpResponse, for: candidate.url)
@@ -1196,7 +1196,7 @@ actor NativeVideoResolver {
             if [403, 405, 501].contains(httpResponse.statusCode) {
                 return await validateDirectMediaCandidateWithRange(candidate, plugin: plugin, cookieJar: cookieJar)
             }
-            print("NativeVideoResolver: direct candidate validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
+            print("NativeVideoResolver: direct candidate validation failed, HTTP \(httpResponse.statusCode): \(URLLogSanitizer.redacted(candidate.url))")
             return false
         } catch {
             if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
@@ -1208,7 +1208,7 @@ actor NativeVideoResolver {
                 )
                 return await validateDirectMediaCandidate(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
             }
-            print("NativeVideoResolver: direct candidate validation failed: \(candidate.url), error: \(error)")
+            print("NativeVideoResolver: direct candidate validation failed: \(URLLogSanitizer.redacted(candidate.url)), error: \(error)")
             return false
         }
     }
@@ -1227,14 +1227,14 @@ actor NativeVideoResolver {
         do {
             let (_, response) = try await validationSession.bytes(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("NativeVideoResolver: direct range validation failed, invalid response: \(candidate.url)")
+                print("NativeVideoResolver: direct range validation failed, invalid response: \(URLLogSanitizer.redacted(candidate.url))")
                 return false
             }
             cookieJar.storeCookies(from: httpResponse, for: candidate.url)
             if (200...399).contains(httpResponse.statusCode), !isHTMLLikeContentType(httpResponse) {
                 return true
             }
-            print("NativeVideoResolver: direct range validation failed, HTTP \(httpResponse.statusCode): \(candidate.url)")
+            print("NativeVideoResolver: direct range validation failed, HTTP \(httpResponse.statusCode): \(URLLogSanitizer.redacted(candidate.url))")
             return false
         } catch {
             if shouldRetryByUpgradingToHTTPS(error: error, url: candidate.url),
@@ -1246,7 +1246,7 @@ actor NativeVideoResolver {
                 )
                 return await validateDirectMediaCandidateWithRange(upgradedCandidate, plugin: plugin, cookieJar: cookieJar)
             }
-            print("NativeVideoResolver: direct range validation failed: \(candidate.url), error: \(error)")
+            print("NativeVideoResolver: direct range validation failed: \(URLLogSanitizer.redacted(candidate.url)), error: \(error)")
             return false
         }
     }

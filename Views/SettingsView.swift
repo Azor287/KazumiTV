@@ -7,14 +7,11 @@
 
 import Kingfisher
 import SwiftUI
-import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var router = Router.shared
 
-    @State private var serverURL: String = SettingsRepository.shared.serverProxyURL
-    @State private var serverEnabled: Bool = SettingsRepository.shared.serverProxyEnabled
     @State private var privateWebResolverEnabled: Bool = SettingsRepository.shared.privateWebResolverEnabled
     @State private var playResume: Bool = SettingsRepository.shared.playResume
     @State private var autoPlay: Bool = SettingsRepository.shared.autoPlay
@@ -27,48 +24,20 @@ struct SettingsView: View {
     @State private var danmakuBottom: Bool = SettingsRepository.shared.danmakuBottom
     @State private var privateMode: Bool = SettingsRepository.shared.privateMode
 
-    @State private var isTestingConnection = false
     @State private var isClearingHistory = false
-    @State private var connectionStatus: ConnectionStatus = .unknown
     @State private var noticeText: String?
     @State private var showClearHistoryConfirmation = false
     @State private var showResetConfirmation = false
-    @State private var serverURLFocusRequestID = 0
-    @State private var wantsServerURLTextInput = false
-    @State private var isServerURLEditing = false
     @FocusState private var focusedSetting: SettingsFocus?
 
     private enum SettingsFocus: Hashable {
-        case serverProxyEnabled
-        case serverURL
-    }
-
-    enum ConnectionStatus {
-        case unknown, testing, success, failed
-
-        var text: String {
-            switch self {
-            case .unknown: return ""
-            case .testing: return "测试中"
-            case .success: return "连接成功"
-            case .failed: return "连接失败"
-            }
-        }
-
-        var color: Color {
-            switch self {
-            case .unknown: return .kzTextSecondary
-            case .testing: return .yellow
-            case .success: return .green
-            case .failed: return .red
-            }
-        }
+        case privateWebResolverEnabled
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
-                serverProxySection
+                localResolverSection
                 playbackSection
                 danmakuSection
                 dataSection
@@ -99,13 +68,11 @@ struct SettingsView: View {
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                focusedSetting = .serverProxyEnabled
+                focusedSetting = .privateWebResolverEnabled
             }
         }
         .onDisappear {
             focusedSetting = nil
-            wantsServerURLTextInput = false
-            isServerURLEditing = false
         }
         .alert("清除观看历史", isPresented: $showClearHistoryConfirmation) {
             Button("取消", role: .cancel) {}
@@ -121,135 +88,22 @@ struct SettingsView: View {
                 resetSettings()
             }
         } message: {
-            Text("播放、弹幕、隐身和解析服务设置会恢复为默认值。")
+            Text("播放、弹幕、隐身和本机解析设置会恢复为默认值。")
         }
     }
 
-    private var serverProxySection: some View {
-        settingsSection(title: "外部解析服务", subtitle: "默认使用 Apple TV 本机解析与 127.0.0.1 播放代理") {
+    private var localResolverSection: some View {
+        settingsSection(title: "本机解析", subtitle: "搜索、动态网页解析和 HLS 转发均在 Apple TV 上完成") {
             toggleRow(
-                title: "启用外部后备解析",
-                subtitle: "仅在本机原生解析失败后调用，通常保持关闭",
-                icon: "network",
-                isOn: $serverEnabled
-            ) { newValue in
-                SettingsRepository.shared.serverProxyEnabled = newValue
-                showNotice(newValue ? "已启用外部后备解析" : "已关闭外部后备解析")
-            }
-            .focused($focusedSetting, equals: .serverProxyEnabled)
-
-            settingsDivider
-
-            toggleRow(
-                title: "实验性私有 WebView 解析",
-                subtitle: "仅限侧载/开源实验构建；本机解析失败后尝试隐藏网页环境",
+                title: "动态网页解析",
+                subtitle: "原生解析失败后使用本机隐藏网页运行时；关闭后只解析静态页面",
                 icon: "safari",
                 isOn: $privateWebResolverEnabled
             ) { newValue in
                 SettingsRepository.shared.privateWebResolverEnabled = newValue
-                showNotice(newValue ? "已启用实验性私有 WebView 解析" : "已关闭实验性私有 WebView 解析")
+                showNotice(newValue ? "已启用本机动态网页解析" : "已仅保留静态页面解析")
             }
-
-            settingsDivider
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("后备服务地址", systemImage: "server.rack")
-                            .font(.headline)
-                            .foregroundColor(.kzText)
-
-                        Text("正常播放走 Apple TV 本机 127.0.0.1；启用后备时真机填写 Mac 局域网地址")
-                            .font(.subheadline)
-                            .foregroundColor(.kzTextSecondary)
-                    }
-
-                    Spacer(minLength: 24)
-
-                    connectionStatusView
-                }
-
-                HStack(spacing: 14) {
-                    let isServerURLActive = focusedSetting == .serverURL || isServerURLEditing
-
-                    HStack(spacing: 0) {
-                        TVServerURLTextField(
-                            text: $serverURL,
-                            placeholder: "http://127.0.0.1:5001",
-                            focusRequestID: serverURLFocusRequestID,
-                            wantsTextInput: $wantsServerURLTextInput,
-                            isEditing: $isServerURLEditing,
-                            isActive: isServerURLActive,
-                            onSubmit: saveServerURL
-                        )
-                        .frame(height: 28)
-                    }
-                    .padding(.horizontal, 18)
-                    .frame(height: 58)
-                    .background(
-                        isServerURLActive
-                            ? Color.kzPrimaryContainer.opacity(0.78)
-                            : Color.kzSurfaceContainerLow
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(
-                                isServerURLActive
-                                    ? Color.kzPrimary.opacity(0.82)
-                                    : Color.kzTextSecondary.opacity(0.18),
-                                lineWidth: isServerURLActive ? 2 : 1
-                            )
-                    )
-                    .shadow(
-                        color: isServerURLActive ? Color.kzFocusGlow : Color.clear,
-                        radius: isServerURLActive ? 16 : 0,
-                        x: 0,
-                        y: isServerURLActive ? 6 : 0
-                    )
-                    .focusable(true)
-                    .focusEffectDisabled()
-                    .focused($focusedSetting, equals: .serverURL)
-                    .onTapGesture {
-                        focusedSetting = .serverURL
-                        wantsServerURLTextInput = true
-                        serverURLFocusRequestID += 1
-                    }
-                    .onChange(of: serverURL) { _, _ in
-                        connectionStatus = .unknown
-                    }
-                    .animation(.easeOut(duration: 0.16), value: isServerURLActive)
-                    .onMoveCommand { direction in
-                        if direction == .right && !isServerURLEditing {
-                            wantsServerURLTextInput = false
-                        }
-                    }
-
-                    Button {
-                        saveServerURL()
-                        testConnection()
-                    } label: {
-                        HStack(spacing: 8) {
-                            if isTestingConnection {
-                                ProgressView()
-                                    .tint(.kzOnPrimaryContainer)
-                            } else {
-                                Image(systemName: "antenna.radiowaves.left.and.right")
-                                    .font(.headline)
-                            }
-
-                            Text(isTestingConnection ? "测试中" : "测试")
-                                .font(.headline)
-                        }
-                        .foregroundColor(.kzOnPrimaryContainer)
-                        .frame(width: 132, height: 58)
-                    }
-                    .disabled(serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isTestingConnection)
-                    .buttonStyle(TVPillButtonStyle())
-                }
-            }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 18)
+            .focused($focusedSetting, equals: .privateWebResolverEnabled)
         }
     }
 
@@ -460,25 +314,6 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionStatusView: some View {
-        Group {
-            if connectionStatus != .unknown {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(connectionStatus.color)
-                        .frame(width: 9, height: 9)
-
-                    Text(connectionStatus.text)
-                        .font(.headline)
-                        .foregroundColor(connectionStatus.color)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(connectionStatus.color.opacity(0.12), in: Capsule())
-            }
-        }
-    }
-
     private var settingsDivider: some View {
         Divider()
             .background(Color.kzTextSecondary.opacity(0.14))
@@ -673,26 +508,6 @@ struct SettingsView: View {
             .background(Color.kzSurfaceContainer, in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private func saveServerURL() {
-        let normalized = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        serverURL = normalized.isEmpty ? "http://127.0.0.1:5001" : normalized
-        SettingsRepository.shared.serverProxyURL = serverURL
-    }
-
-    private func testConnection() {
-        isTestingConnection = true
-        connectionStatus = .testing
-
-        Task {
-            let isHealthy = await ServerAPI.shared.healthCheck()
-            await MainActor.run {
-                isTestingConnection = false
-                connectionStatus = isHealthy ? .success : .failed
-                showNotice(isHealthy ? "后备服务连接成功" : "后备服务连接失败")
-            }
-        }
-    }
-
     private func clearImageCache() {
         ImageCache.default.clearMemoryCache()
         ImageCache.default.clearDiskCache {
@@ -724,7 +539,6 @@ struct SettingsView: View {
     private func resetSettings() {
         SettingsRepository.shared.resetToDefaults()
         reloadFromSettings()
-        connectionStatus = .unknown
         showNotice("已恢复默认设置")
     }
 
@@ -737,8 +551,6 @@ struct SettingsView: View {
     }
 
     private func reloadFromSettings() {
-        serverURL = SettingsRepository.shared.serverProxyURL
-        serverEnabled = SettingsRepository.shared.serverProxyEnabled
         privateWebResolverEnabled = SettingsRepository.shared.privateWebResolverEnabled
         playResume = SettingsRepository.shared.playResume
         autoPlay = SettingsRepository.shared.autoPlay
@@ -763,120 +575,6 @@ struct SettingsView: View {
             withAnimation(.easeOut(duration: 0.18)) {
                 noticeText = nil
             }
-        }
-    }
-}
-
-private struct TVServerURLTextField: UIViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let focusRequestID: Int
-    @Binding var wantsTextInput: Bool
-    @Binding var isEditing: Bool
-    let isActive: Bool
-    let onSubmit: () -> Void
-
-    func makeUIView(context: Context) -> UITextField {
-        let textField = UITextField(frame: .zero)
-        textField.backgroundColor = .clear
-        textField.borderStyle = .none
-        textField.textColor = UIColor(Color.kzText)
-        textField.tintColor = UIColor(Color.kzPrimary)
-        textField.font = UIFont.preferredFont(forTextStyle: .headline)
-        textField.returnKeyType = .done
-        textField.keyboardType = .URL
-        textField.keyboardAppearance = .dark
-        textField.clearButtonMode = .whileEditing
-        textField.autocorrectionType = .no
-        textField.autocapitalizationType = .none
-        textField.delegate = context.coordinator
-        textField.attributedPlaceholder = placeholderText(isActive: false)
-        textField.addTarget(
-            context.coordinator,
-            action: #selector(Coordinator.textDidChange(_:)),
-            for: .editingChanged
-        )
-
-        return textField
-    }
-
-    func updateUIView(_ uiView: UITextField, context: Context) {
-        if uiView.text != text {
-            uiView.text = text
-        }
-
-        uiView.textColor = UIColor(isActive ? Color.kzOnPrimaryContainer : Color.kzText)
-        uiView.tintColor = UIColor(Color.kzPrimary)
-        uiView.backgroundColor = .clear
-        uiView.attributedPlaceholder = placeholderText(isActive: isActive)
-
-        context.coordinator.wantsTextInput = $wantsTextInput
-        context.coordinator.isEditing = $isEditing
-
-        if focusRequestID != context.coordinator.lastFocusRequestID,
-           uiView.window != nil {
-            context.coordinator.lastFocusRequestID = focusRequestID
-            DispatchQueue.main.async {
-                uiView.becomeFirstResponder()
-            }
-        } else if !wantsTextInput, uiView.isFirstResponder {
-            DispatchQueue.main.async {
-                uiView.resignFirstResponder()
-            }
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, wantsTextInput: $wantsTextInput, isEditing: $isEditing, onSubmit: onSubmit)
-    }
-
-    private func placeholderText(isActive: Bool) -> NSAttributedString {
-        NSAttributedString(
-            string: placeholder,
-            attributes: [
-                .foregroundColor: UIColor(isActive ? Color.kzOnPrimaryContainer.opacity(0.52) : Color.kzTextSecondary.opacity(0.62)),
-                .font: UIFont.preferredFont(forTextStyle: .headline)
-            ]
-        )
-    }
-
-    final class Coordinator: NSObject, UITextFieldDelegate {
-        @Binding private var text: String
-        var wantsTextInput: Binding<Bool>
-        var isEditing: Binding<Bool>
-        var lastFocusRequestID = 0
-        private let onSubmit: () -> Void
-
-        init(
-            text: Binding<String>,
-            wantsTextInput: Binding<Bool>,
-            isEditing: Binding<Bool>,
-            onSubmit: @escaping () -> Void
-        ) {
-            _text = text
-            self.wantsTextInput = wantsTextInput
-            self.isEditing = isEditing
-            self.onSubmit = onSubmit
-        }
-
-        @objc func textDidChange(_ textField: UITextField) {
-            text = textField.text ?? ""
-        }
-
-        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-            onSubmit()
-            wantsTextInput.wrappedValue = false
-            textField.resignFirstResponder()
-            return true
-        }
-
-        func textFieldDidBeginEditing(_ textField: UITextField) {
-            isEditing.wrappedValue = true
-        }
-
-        func textFieldDidEndEditing(_ textField: UITextField) {
-            wantsTextInput.wrappedValue = false
-            isEditing.wrappedValue = false
         }
     }
 }
