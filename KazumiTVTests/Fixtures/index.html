@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>KazumiTV Web Resolver Fixture</title></head>
+<body>
+<script>
+setTimeout(function () {
+  fetch("/master.m3u8").catch(function () {});
+}, 100);
+</script>
+</body>
+</html>

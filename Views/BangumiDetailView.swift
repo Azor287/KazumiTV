@@ -991,6 +991,7 @@ enum SourcePluginSearchStatus: Hashable {
     case success
     case noResult
     case captcha
+    case blocked(String)
     case error(String)
 
     var sortPriority: Int {
@@ -1000,6 +1001,8 @@ enum SourcePluginSearchStatus: Hashable {
         case .pending:
             return 1
         case .captcha:
+            return 2
+        case .blocked:
             return 2
         case .error:
             return 3
@@ -1017,6 +1020,8 @@ enum SourcePluginSearchStatus: Hashable {
         case .noResult:
             return Color.orange
         case .captcha:
+            return Color.blue
+        case .blocked:
             return Color.blue
         case .error:
             return Color.red
@@ -1038,7 +1043,15 @@ private struct PluginSourceSearchResult {
     let keyword: String
     let results: [SearchItem]
     let errorDescription: String?
-    let isCaptcha: Bool
+    let failureStatus: SourcePluginSearchStatus?
+}
+
+private struct SourcePluginSearchTimeoutError: LocalizedError {
+    let pluginName: String
+
+    var errorDescription: String? {
+        "\(pluginName) 搜索超时"
+    }
 }
 
 private enum SourceSheetFocus: Hashable {
@@ -1159,16 +1172,7 @@ private struct SourceSelectionSheet: View {
     }
 
     private var orderedSourcePluginTabs: [SourcePluginTab] {
-        sourcePluginTabs.enumerated()
-            .sorted { lhs, rhs in
-                let lhsPriority = lhs.element.status.sortPriority
-                let rhsPriority = rhs.element.status.sortPriority
-                if lhsPriority == rhsPriority {
-                    return lhs.offset < rhs.offset
-                }
-                return lhsPriority < rhsPriority
-            }
-            .map(\.element)
+        SourcePlaybackPreferenceStore.shared.sortedPluginTabs(sourcePluginTabs)
     }
 
     private var headerTabs: some View {
@@ -1211,6 +1215,14 @@ private struct SourceSelectionSheet: View {
                         primaryAction: { searchAliasForPlugin(tab.plugin.name) },
                         secondaryAction: { presentManualSearch(for: tab.plugin.name) }
                     )
+                case .blocked(let message):
+                    emptyState(
+                        message.isEmpty ? "\(tab.plugin.name) 需要真实浏览器验证" : message,
+                        primaryTitle: "别名检索",
+                        secondaryTitle: "手动检索",
+                        primaryAction: { searchAliasForPlugin(tab.plugin.name) },
+                        secondaryAction: { presentManualSearch(for: tab.plugin.name) }
+                    )
                 case .error(let message):
                     emptyState(
                         message.isEmpty ? "\(tab.plugin.name) 搜索失败" : message,
@@ -1237,6 +1249,10 @@ private struct SourceSelectionSheet: View {
                         .fontWeight(.semibold)
                         .foregroundStyle(isSelected ? Color.kzText : Color.kzTextSecondary)
                         .lineLimit(1)
+
+                    if let badgeTitle = SourcePlaybackPreferenceStore.shared.capabilityBadgeTitle(tab.plugin) {
+                        nativePlaybackBadge(title: badgeTitle)
+                    }
 
                     Circle()
                         .fill(tab.status.indicatorColor)
@@ -1304,6 +1320,10 @@ private struct SourceSelectionSheet: View {
 
                 Spacer(minLength: 16)
 
+                if let badgeTitle = SourcePlaybackPreferenceStore.shared.capabilityBadgeTitle(source.pluginName) {
+                    nativePlaybackBadge(title: badgeTitle == "本机" ? "本机播放" : badgeTitle)
+                }
+
                 if loadingSourceKey == sourceID {
                     ProgressView()
                         .tint(.kzPrimary)
@@ -1316,6 +1336,20 @@ private struct SourceSelectionSheet: View {
         }
         .buttonStyle(TVCardButtonStyle())
         .focused($focusedElement, equals: .source(sourceID))
+    }
+
+    private func nativePlaybackBadge(title: String) -> some View {
+        Text(title)
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundStyle(Color.kzOnPrimaryContainer)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(Color.kzPrimaryContainer.opacity(0.72))
+            )
     }
 
     private var manualEpisodePicker: some View {
@@ -1907,6 +1941,12 @@ final class SourcePlaybackPreferenceStore {
 
     private let defaults = UserDefaults.standard
     private let storageKey = "kazumi.sourcePlaybackPreferences.v1"
+    private let nativeOnlyPluginPriority: [String: Double] = [
+        "mxdm": 10_000,
+        "gpjda": 9_900,
+        "aafun": 9_800,
+        "gugu3": 9_700,
+    ]
     private var records: [String: SourcePlaybackPreferenceRecord]
 
     private init() {
@@ -1927,6 +1967,93 @@ final class SourcePlaybackPreferenceStore {
             }
             return lhsScore > rhsScore
         }
+    }
+
+    func sortedPluginTabs(_ tabs: [SourcePluginTab]) -> [SourcePluginTab] {
+        tabs.enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = localModeTabRank(lhs.element)
+                let rhsRank = localModeTabRank(rhs.element)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+
+                let lhsScore = pluginScore(lhs.element.plugin.name)
+                let rhsScore = pluginScore(rhs.element.plugin.name)
+
+                let lhsStatusPriority = lhs.element.status.sortPriority
+                let rhsStatusPriority = rhs.element.status.sortPriority
+                if lhsStatusPriority != rhsStatusPriority {
+                    return lhsStatusPriority < rhsStatusPriority
+                }
+
+                if lhsScore != rhsScore {
+                    return lhsScore > rhsScore
+                }
+
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    func preferredPluginName(in tabs: [SourcePluginTab]) -> String? {
+        sortedPluginTabs(tabs).first?.plugin.name
+    }
+
+    func preferredSuccessfulPluginName(in tabs: [SourcePluginTab]) -> String? {
+        sortedPluginTabs(tabs).first(where: tabHasSearchResults)?.plugin.name
+    }
+
+    func supportsNativeLoopbackPlayback(_ pluginName: String) -> Bool {
+        SourceCapabilityRegistry.capability(forPluginName: pluginName).supportsLocalPlayback
+    }
+
+    func capabilityBadgeTitle(_ pluginName: String) -> String? {
+        SourceCapabilityRegistry.capability(forPluginName: pluginName).badgeTitle
+    }
+
+    func capabilityBadgeTitle(_ plugin: PluginRule) -> String? {
+        plugin.playbackCapability.badgeTitle
+    }
+
+    private func localModeTabRank(_ tab: SourcePluginTab) -> Int {
+        let capability = tab.plugin.playbackCapability
+        let hasSearchResults = tabHasSearchResults(tab)
+        let isPending = tabIsPending(tab)
+        let isCaptcha = tabIsCaptcha(tab)
+
+        if capability.supportsLocalPlayback && hasSearchResults { return 0 }
+        if hasSearchResults && !capability.requiresBrowserRuntime { return 1 }
+        if capability.supportsLocalPlayback && isPending { return 2 }
+        if hasSearchResults { return 3 }
+        if isPending && !capability.requiresBrowserRuntime { return 4 }
+        if capability.supportsLocalPlayback { return 5 }
+        if isCaptcha || capability.requiresBrowserRuntime { return 7 }
+        return 6
+    }
+
+    private func tabHasSearchResults(_ tab: SourcePluginTab) -> Bool {
+        if case .success = tab.status {
+            return !tab.results.isEmpty
+        }
+        return false
+    }
+
+    private func tabIsPending(_ tab: SourcePluginTab) -> Bool {
+        if case .pending = tab.status {
+            return true
+        }
+        return false
+    }
+
+    private func tabIsCaptcha(_ tab: SourcePluginTab) -> Bool {
+        if case .captcha = tab.status {
+            return true
+        }
+        if case .blocked = tab.status {
+            return true
+        }
+        return false
     }
 
     func preferredRoad(in roads: [ChapterRoad], pluginName: String) -> ChapterRoad? {
@@ -1983,10 +2110,26 @@ final class SourcePlaybackPreferenceStore {
     }
 
     private func pluginScore(_ pluginName: String) -> Double {
-        records.values
+        let learnedScore = records.values
             .filter { $0.pluginName == pluginName }
             .map(recordScore)
             .max() ?? 0
+        let capability = SourceCapabilityRegistry.capability(forPluginName: pluginName)
+        let normalizedName = SourceCapabilityRegistry.normalizedPluginName(pluginName)
+        let manualPriority = nativeOnlyPluginPriority[normalizedName] ?? 0
+
+        let capabilityScore = capability.searchWeight * 20 + capability.stability * 20
+        let localModeScore: Double
+        if capability.supportsLocalPlayback {
+            localModeScore = manualPriority + 1_000
+        } else if capability.requiresBrowserRuntime {
+            localModeScore = SettingsRepository.shared.privateWebResolverEnabled ? -100 : -500
+        } else {
+            localModeScore = capabilityScore
+        }
+
+        let captchaPenalty: Double = capability.captchaRisk == .high ? 80 : 0
+        return localModeScore + capabilityScore + learnedScore - captchaPenalty
     }
 
     private func roadScore(pluginName: String, roadID: String, roadName: String) -> Double {
@@ -2073,6 +2216,7 @@ class BangumiDetailViewModel: ObservableObject {
     private let bangumiAPI = BangumiAPI.shared
     private let pluginManager = PluginManager.shared
     private let favoriteRepository = FavoriteRepository.shared
+    private let sourcePluginSearchTimeoutNanoseconds: UInt64 = 12_000_000_000
 
     func loadData(bangumi: Bangumi, searchItem: SearchItem?) async {
         currentBangumiID = bangumi.id
@@ -2414,7 +2558,7 @@ class BangumiDetailViewModel: ObservableObject {
             try await pluginManager.loadPlugins()
             guard !Task.isCancelled else { return }
 
-            let plugins = await pluginManager.getAllPlugins()
+            let plugins = await pluginManager.getAllPlugins().filter { $0.playbackCapability.searchSupported }
             let keyword = primarySourceKeyword(for: bangumi)
             sourceQueryKeyword = keyword
             sourcePluginTabs = plugins.map { plugin in
@@ -2430,17 +2574,16 @@ class BangumiDetailViewModel: ObservableObject {
                 selectedSourcePluginName = preferredSearchItem.pluginName
                 mergePreferredSource(preferredSearchItem, keyword: keyword)
             } else {
-                selectedSourcePluginName = plugins.first?.name
+                selectedSourcePluginName = SourcePlaybackPreferenceStore.shared.preferredPluginName(in: sourcePluginTabs)
             }
 
             await searchAllSourcePlugins(plugins: plugins, keyword: keyword)
             guard !Task.isCancelled else { return }
 
             if preferredSearchItem == nil || selectedTabHasNoResult() {
-                selectedSourcePluginName = sourcePluginTabs.first(where: {
-                    if case .success = $0.status { return true }
-                    return false
-                })?.plugin.name ?? sourcePluginTabs.first?.plugin.name
+                let orderedTabs = SourcePlaybackPreferenceStore.shared.sortedPluginTabs(sourcePluginTabs)
+                selectedSourcePluginName = SourcePlaybackPreferenceStore.shared.preferredSuccessfulPluginName(in: orderedTabs)
+                    ?? orderedTabs.first?.plugin.name
             }
         } catch {
             sourceSelectionError = error.localizedDescription
@@ -2451,37 +2594,12 @@ class BangumiDetailViewModel: ObservableObject {
     private func searchAllSourcePlugins(plugins: [PluginRule], keyword: String) async {
         await withTaskGroup(of: PluginSourceSearchResult?.self) { group in
             for plugin in plugins {
-                group.addTask {
-                    if Task.isCancelled {
-                        return nil
-                    }
-
-                    do {
-                        let results = try await PluginManager.shared.searchWithPlugin(plugin: plugin, keyword: keyword)
-                        if Task.isCancelled {
-                            return nil
-                        }
-
-                        return PluginSourceSearchResult(
-                            plugin: plugin,
-                            keyword: keyword,
-                            results: results,
-                            errorDescription: nil,
-                            isCaptcha: false
-                        )
-                    } catch {
-                        if error is CancellationError || Task.isCancelled {
-                            return nil
-                        }
-
-                        return PluginSourceSearchResult(
-                            plugin: plugin,
-                            keyword: keyword,
-                            results: [],
-                            errorDescription: error.localizedDescription,
-                            isCaptcha: plugin.antiCrawlerConfig != nil
-                        )
-                    }
+                group.addTask { [sourcePluginSearchTimeoutNanoseconds] in
+                    await Self.searchPluginResult(
+                        plugin: plugin,
+                        keyword: keyword,
+                        timeoutNanoseconds: sourcePluginSearchTimeoutNanoseconds
+                    )
                 }
             }
 
@@ -2493,6 +2611,7 @@ class BangumiDetailViewModel: ObservableObject {
 
                 guard let result else { continue }
                 applyPluginSearchResult(result)
+                selectAvailableSourcePluginIfCurrentIsPending()
             }
         }
     }
@@ -2514,14 +2633,18 @@ class BangumiDetailViewModel: ObservableObject {
         }
 
         do {
-            let results = try await pluginManager.searchWithPlugin(plugin: plugin, keyword: keyword)
+            let results = try await Self.searchPluginResultsWithTimeout(
+                plugin: plugin,
+                keyword: keyword,
+                timeoutNanoseconds: sourcePluginSearchTimeoutNanoseconds
+            )
             applyPluginSearchResult(
                 PluginSourceSearchResult(
                     plugin: plugin,
                     keyword: keyword,
                     results: results,
                     errorDescription: nil,
-                    isCaptcha: false
+                    failureStatus: nil
                 )
             )
         } catch {
@@ -2531,10 +2654,73 @@ class BangumiDetailViewModel: ObservableObject {
                     keyword: keyword,
                     results: [],
                     errorDescription: error.localizedDescription,
-                    isCaptcha: plugin.antiCrawlerConfig != nil
+                    failureStatus: Self.sourceSearchFailureStatus(error: error, plugin: plugin)
                 )
             )
             print("BangumiDetailViewModel: \(plugin.name) search failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func searchPluginResult(
+        plugin: PluginRule,
+        keyword: String,
+        timeoutNanoseconds: UInt64
+    ) async -> PluginSourceSearchResult? {
+        if Task.isCancelled {
+            return nil
+        }
+
+        do {
+            let results = try await searchPluginResultsWithTimeout(
+                plugin: plugin,
+                keyword: keyword,
+                timeoutNanoseconds: timeoutNanoseconds
+            )
+            if Task.isCancelled {
+                return nil
+            }
+
+            return PluginSourceSearchResult(
+                plugin: plugin,
+                keyword: keyword,
+                results: results,
+                errorDescription: nil,
+                failureStatus: nil
+            )
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                return nil
+            }
+
+            return PluginSourceSearchResult(
+                plugin: plugin,
+                keyword: keyword,
+                results: [],
+                errorDescription: error.localizedDescription,
+                failureStatus: sourceSearchFailureStatus(error: error, plugin: plugin)
+            )
+        }
+    }
+
+    private static func searchPluginResultsWithTimeout(
+        plugin: PluginRule,
+        keyword: String,
+        timeoutNanoseconds: UInt64
+    ) async throws -> [SearchItem] {
+        try await withThrowingTaskGroup(of: [SearchItem].self) { group in
+            group.addTask {
+                try await PluginManager.shared.searchWithPlugin(plugin: plugin, keyword: keyword)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw SourcePluginSearchTimeoutError(pluginName: plugin.name)
+            }
+            defer { group.cancelAll() }
+
+            guard let results = try await group.next() else {
+                throw CancellationError()
+            }
+            return results
         }
     }
 
@@ -2543,12 +2729,13 @@ class BangumiDetailViewModel: ObservableObject {
             setSourcePluginTab(pluginName: result.plugin.name) { tab in
                 tab.keyword = result.keyword
                 tab.results = []
-                tab.status = result.isCaptcha ? .captcha : .error(errorDescription)
+                tab.status = result.failureStatus ?? .error(errorDescription)
             }
             return
         }
 
         let unique = strictSourceResults(result.results, keyword: result.keyword)
+        print("BangumiDetailViewModel: \(result.plugin.name) source search raw=\(result.results.count), filtered=\(unique.count), keyword=\(result.keyword)")
         for source in unique {
             appendSourceCandidate(source)
         }
@@ -2557,6 +2744,35 @@ class BangumiDetailViewModel: ObservableObject {
             tab.keyword = result.keyword
             tab.results = unique
             tab.status = unique.isEmpty ? .noResult : .success
+        }
+    }
+
+    private static func sourceSearchFailureStatus(error: Error, plugin: PluginRule) -> SourcePluginSearchStatus? {
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .webChallenge(let signal):
+                return sourceSearchChallengeStatus(signal: signal, pluginName: plugin.name)
+            case .emptyHTML where plugin.playbackCapability.requiresBrowserRuntime:
+                return .blocked("\(plugin.name) 需要真实浏览器环境，当前无外部解析模式不支持。")
+            default:
+                break
+            }
+        }
+
+        if plugin.antiCrawlerConfig != nil {
+            return .captcha
+        }
+
+        return nil
+    }
+
+    private static func sourceSearchChallengeStatus(signal: WebChallengeSignal, pluginName: String) -> SourcePluginSearchStatus {
+        switch signal.kind {
+        case .captcha:
+            return .captcha
+        case .challenge:
+            let vendor = signal.vendor ?? pluginName
+            return .blocked("\(vendor) 正在要求真实浏览器安全验证，当前 Apple TV 本机模式不支持。")
         }
     }
 
@@ -2576,6 +2792,18 @@ class BangumiDetailViewModel: ObservableObject {
         }
 
         update(&sourcePluginTabs[index])
+    }
+
+    private func selectAvailableSourcePluginIfCurrentIsPending() {
+        guard let currentSelectedPluginName = selectedSourcePluginName,
+              let selected = sourcePluginTabs.first(where: { $0.plugin.name == currentSelectedPluginName }) else {
+            selectedSourcePluginName = SourcePlaybackPreferenceStore.shared.preferredSuccessfulPluginName(in: sourcePluginTabs)
+            return
+        }
+
+        guard case .pending = selected.status else { return }
+        selectedSourcePluginName = SourcePlaybackPreferenceStore.shared.preferredSuccessfulPluginName(in: sourcePluginTabs)
+            ?? currentSelectedPluginName
     }
 
     private func selectedTabHasNoResult() -> Bool {
@@ -2711,8 +2939,16 @@ class BangumiDetailViewModel: ObservableObject {
         let matchKeys = strictSourceMatchKeys(for: bangumi, extraKeywords: extraKeywords)
         guard !matchKeys.isEmpty else { return [] }
 
-        return uniqueSources(results).filter { source in
+        let unique = uniqueSources(results)
+        let exactMatches = unique.filter { source in
             sourceStrictlyMatches(source, matchKeys: matchKeys)
+        }
+        if !exactMatches.isEmpty {
+            return exactMatches
+        }
+
+        return unique.filter { source in
+            sourceLooselyMatches(source, matchKeys: matchKeys)
         }
     }
 
@@ -2743,6 +2979,18 @@ class BangumiDetailViewModel: ObservableObject {
             .map(normalizedStrictSourceName)
             .contains { key in
                 !key.isEmpty && matchKeys.contains(key)
+            }
+    }
+
+    private func sourceLooselyMatches(_ source: SearchItem, matchKeys: Set<String>) -> Bool {
+        [source.name, source.nameCn, source.displayName]
+            .map(normalizedStrictSourceName)
+            .contains { sourceKey in
+                guard sourceKey.count >= 4 else { return false }
+                return matchKeys.contains { matchKey in
+                    guard matchKey.count >= 4 else { return false }
+                    return sourceKey.contains(matchKey) || matchKey.contains(sourceKey)
+                }
             }
     }
 

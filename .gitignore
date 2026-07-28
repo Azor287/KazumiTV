@@ -10,6 +10,7 @@ DerivedData/
 *.dSYM/
 *.dSYM.zip
 *.ipa
+artifacts/*.tar.gz
 *.hmap
 *.moved-aside
 *.xccheckout
@@ -76,6 +77,7 @@ CLAUDE.md
 GEMINI.md
 .claude/
 .codex/
+.codegraph/
 .cursor/
 .cursorrules
 .aider*

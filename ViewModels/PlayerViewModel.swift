@@ -54,6 +54,7 @@ class PlayerViewModel: ObservableObject {
     private var controlsTimer: Timer?
     private var danmakuLoadingTask: Task<Void, Never>?
     private var loadGeneration: UInt64 = 0
+    private let videoResolveTimeoutNanoseconds: UInt64 = 20_000_000_000
 
     // MARK: - Init
 
@@ -144,14 +145,14 @@ class PlayerViewModel: ObservableObject {
     private func resolveVideoSource(for episode: Episode, resumePosition: TimeInterval? = nil, generation: UInt64) async {
         guard isCurrentLoad(generation) else { return }
         print("PlayerViewModel.resolveVideoSource: 开始解析视频源")
-        print("PlayerViewModel.resolveVideoSource: episode.pageURL = \(episode.pageURL ?? "nil")")
+        print("PlayerViewModel.resolveVideoSource: episode.pageURL = \(URLLogSanitizer.redacted(episode.pageURL))")
         print("PlayerViewModel.resolveVideoSource: episode.pluginName = \(episode.pluginName ?? "nil")")
         isBuffering = true
         error = nil
 
         // 如果 episode 有 pageURL，使用它来解析视频
         if let pageURL = episode.pageURL, !pageURL.isEmpty {
-            print("PlayerViewModel.resolveVideoSource: 使用 pageURL 解析: \(pageURL)")
+            print("PlayerViewModel.resolveVideoSource: 使用 pageURL 解析: \(URLLogSanitizer.redacted(pageURL))")
             await resolveWithPageURL(pageURL, pluginName: episode.pluginName, resumePosition: resumePosition, generation: generation)
             return
         }
@@ -164,20 +165,12 @@ class PlayerViewModel: ObservableObject {
 
     private func resolveWithPageURL(_ pageURL: String, pluginName: String?, resumePosition: TimeInterval? = nil, generation: UInt64) async {
         guard isCurrentLoad(generation) else { return }
-        print("PlayerViewModel.resolveWithPageURL: 开始解析 pageURL: \(pageURL), pluginName: \(pluginName ?? "nil")")
-        let settings = SettingsRepository.shared
-        print("PlayerViewModel.resolveWithPageURL: serverProxyEnabled = \(settings.serverProxyEnabled)")
-        print("PlayerViewModel.resolveWithPageURL: serverProxyURL = \(settings.serverProxyURL)")
+        print(
+            "PlayerViewModel.resolveWithPageURL: 开始本机解析 pageURL: "
+                + "\(URLLogSanitizer.redacted(pageURL)), pluginName: \(pluginName ?? "nil")"
+        )
 
-        guard settings.serverProxyEnabled else {
-            guard isCurrentLoad(generation) else { return }
-            print("PlayerViewModel.resolveWithPageURL: 服务器代理未启用")
-            isBuffering = false
-            error = PlayerError.serverProxyDisabled
-            return
-        }
-
-        // 使用服务器代理获取视频
+        // 优先使用 tvOS 原生解析；外部解析服务只作为显式后备。
         do {
             let resolver = VideoSourceResolver.shared
             print("PlayerViewModel.resolveWithPageURL: 获取 VideoSourceResolver")
@@ -195,15 +188,47 @@ class PlayerViewModel: ObservableObject {
             guard isCurrentLoad(generation) else { return }
 
             print("PlayerViewModel.resolveWithPageURL: 调用 resolver.resolveVideoURL")
-            let videoSource = try await resolver.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+            let videoSource = try await resolveVideoURLWithTimeout(
+                resolver: resolver,
+                pageURL: pageURL,
+                plugin: plugin
+            )
             guard isCurrentLoad(generation) else { return }
-            print("PlayerViewModel.resolveWithPageURL: 解析成功，videoSource.url = \(videoSource.url)")
+            print(
+                "PlayerViewModel.resolveWithPageURL: 本机解析成功，videoSource.url = "
+                    + URLLogSanitizer.redacted(videoSource.url)
+            )
             loadResolvedVideo(source: videoSource, resumePosition: resumePosition)
         } catch {
             guard isCurrentLoad(generation) else { return }
             print("PlayerViewModel.resolveWithPageURL: 视频解析失败: \(error)")
             isBuffering = false
             self.error = error
+        }
+    }
+
+    private func resolveVideoURLWithTimeout(
+        resolver: VideoSourceResolver,
+        pageURL: String,
+        plugin: PluginRule
+    ) async throws -> VideoSource {
+        let timeoutNanoseconds = SettingsRepository.shared.privateWebResolverEnabled
+            ? 36_000_000_000
+            : videoResolveTimeoutNanoseconds
+        return try await withThrowingTaskGroup(of: VideoSource.self) { group in
+            group.addTask {
+                try await resolver.resolveVideoURL(pageURL: pageURL, plugin: plugin)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw PlayerError.playbackTimeout
+            }
+            defer { group.cancelAll() }
+
+            guard let source = try await group.next() else {
+                throw CancellationError()
+            }
+            return source
         }
     }
 

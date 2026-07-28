@@ -8,7 +8,7 @@ KazumiTV 是 [Kazumi](https://github.com/Predidit/Kazumi) 的独立 Apple TV/tvO
 
 ## 项目状态
 
-KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，由于 tvOS 无法在应用内直接执行与桌面端相同的网页解析和 JavaScript 工作流，因此项目使用本地或服务端代理来解析视频 URL。
+KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，使用 `URLSession + Fuzi + JavaScriptCore` 与本机隐藏网页运行时解析视频地址，并在 App 内启动只绑定 `127.0.0.1` 的 loopback 播放代理，为 HLS 播放列表、分片、密钥和 MP4 请求注入必要请求头。安装和播放不需要部署额外服务。
 
 ## 使用截图
 
@@ -23,17 +23,16 @@ KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，由于 tvOS
 - tvOS 应用：Swift、SwiftUI、MVVM
 - 导航：基于 `NavigationStack` 与共享 Router
 - 插件解析：通过 Fuzi 进行 XPath 解析
+- 视频解析：静态/轻量脚本使用原生解析，动态页面使用本机隐藏网页运行时
+- 播放代理：App 内 `127.0.0.1` loopback HLS/MP4 代理，负责重写播放列表与透传 Range
 - 本地存储：SQLite.swift 与 UserDefaults
 - 图片加载与缓存：Kingfisher
-- 服务器代理：Python Flask + Playwright，位于 `kazumi-server/`
 
 ## 环境要求
 
 - Xcode 15 或更新版本
 - tvOS 17.0 或更新版本
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-- Python 3，用于可选的服务器代理
-- Playwright Chromium，用于服务端网页解析
 
 ## 构建
 
@@ -83,41 +82,25 @@ xcodebuild -project KazumiTV.xcodeproj \
 
 请不要把真实 DanDanPlay 密钥提交到仓库。`Config/DanDanPlay.local.xcconfig` 已被 Git 忽略；未配置凭据时，播放器会保留弹幕开关与渲染能力，但弹幕加载会显示未配置提示。
 
-## 服务器代理
+## 播放解析模式
 
-代理服务器位于 `kazumi-server/`。
-
-```bash
-cd kazumi-server
-./start.sh
-```
-
-默认情况下，服务器会尝试使用 `5001` 端口。在 tvOS 应用设置中配置代理服务器地址，例如：
+播放链路完全在 Apple TV 本机完成：
 
 ```text
-http://192.168.1.100:5001
+原生页面解析 -> 本机动态网页解析（按需） -> App 内 127.0.0.1 loopback 代理 -> AVPlayer
 ```
 
-如果需要自定义服务端口，可以在启动服务器时传入 `--port` 或 `-p`：
+本地 loopback 代理只监听 Apple TV 真机自己的 `127.0.0.1` 随机端口，不会暴露到局域网。它会把远端 m3u8/mp4 映射为短 token URL，重写 HLS master/media playlist、segment、`EXT-X-KEY` 和 `EXT-X-MAP`，并透传 `Range`、`Content-Type`、`Content-Length`、`Content-Range` 等响应头。
 
-```bash
-cd kazumi-server
-./start.sh --port 6000
-```
+动态网页解析默认开启，可以在设置中关闭。验证码、登录态或强反爬页面仍可能无法解析，应用会自动切换下一来源。
 
-然后在 tvOS 应用设置中填写对应端口：
+> 侧载说明：tvOS 没有公开可用的网页视图 API，动态网页解析因此通过运行时加载系统 WebKit 类实现，仅适用于自行签名/侧载构建，不能作为 App Store 审核兼容方案；系统升级后若该运行时不可用，原生解析来源仍可继续工作。
 
-```text
-http://192.168.1.100:6000
-```
+## 规则源
 
-如需限制监听地址，也可以传入 `--host`。例如只允许本机访问：
+首次安装会优先尝试从 [KazumiRules](https://github.com/Predidit/KazumiRules) 获取推荐原生播放规则，并以内置 AGE、DM84、aafun 作为离线兜底。已有安装不会在播放时自动联网更新规则；可以在“规则管理”里使用“安装推荐”补齐 MXdm、omofun03、xfdmneo、7sefun、gugu3 等规则，或使用“规则仓库”手动安装更多规则。
 
-```bash
-./start.sh --host 127.0.0.1 --port 6000
-```
-
-在真实 Apple TV 设备上测试时，请使用运行服务器的 Mac 或主机的局域网 IP 地址。
+默认播放源排序会优先使用近期开播成功的来源；没有历史记录时，MXdm 等无反爬原生播放源会排在 AGE/aafun 这类更容易遇到 CDN 地区限制的来源前面。
 
 ## 与 Kazumi 的关系
 

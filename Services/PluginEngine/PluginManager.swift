@@ -8,6 +8,14 @@
 import Foundation
 import Fuzi
 
+private struct PluginSearchTimeoutError: LocalizedError {
+    let pluginName: String
+
+    var errorDescription: String? {
+        "\(pluginName) 搜索超时"
+    }
+}
+
 actor PluginManager {
     static let shared = PluginManager()
 
@@ -15,6 +23,22 @@ actor PluginManager {
         "https://raw.githubusercontent.com/Predidit/KazumiRules/main/",
         "https://cdn.jsdelivr.net/gh/Predidit/KazumiRules@main/",
     ]
+    private let recommendedRepositoryPluginNames = [
+        "MXdm",
+        "omofun03",
+        "baimao",
+        "enlie",
+        "gpjda",
+        "aafun",
+        "mwcy",
+        "gugu3",
+        "7sefun",
+        "yishijie",
+        "DM84",
+        "AGE",
+        "xfdmneo",
+    ]
+    private let recommendedBootstrapFlagKey = "kazumi.pluginRepositoryRecommendedBootstrapped.v1"
     private let maxSupportedAPILevel = 6
     private let pluginsFileName = "plugins.json"
     private let repositoryHeaders = [
@@ -24,6 +48,8 @@ actor PluginManager {
 
     private var plugins: [PluginRule] = []
     private var pluginsByName: [String: PluginRule] = [:]
+    private var searchWarmupHosts = Set<String>()
+    private let searchTimeoutNanoseconds: UInt64 = 12_000_000_000
 
     private init() {}
 
@@ -40,9 +66,9 @@ actor PluginManager {
             return
         }
 
-        let bundledRules = try loadBundledPlugins()
-        try savePlugins(bundledRules)
-        setPlugins(bundledRules)
+        let defaultRules = try await loadDefaultPlugins()
+        try savePlugins(defaultRules)
+        setPlugins(defaultRules)
 
         if plugins.isEmpty {
             throw PluginError.failedToLoadPlugins
@@ -67,6 +93,50 @@ actor PluginManager {
         }
 
         return pluginURLs.compactMap { try? loadPlugin(from: $0) }
+    }
+
+    private func loadDefaultPlugins() async throws -> [PluginRule] {
+        let bundledRules = try loadBundledPlugins()
+        let recommendedRules = (try? await fetchRecommendedRepositoryPlugins(excluding: [])) ?? []
+        if !recommendedRules.isEmpty {
+            UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
+            return mergePlugins(preferred: recommendedRules, fallback: bundledRules)
+        }
+        return bundledRules
+    }
+
+    private func fetchRecommendedRepositoryPlugins(excluding installedNames: Set<String>) async throws -> [PluginRule] {
+        let repositoryItems = try await fetchRepositoryIndex()
+        let recommendedAvailableNames = Set(
+            repositoryItems
+                .filter { $0.useNativePlayer && !$0.antiCrawlerEnabled }
+                .map(\.name)
+        )
+
+        var rules: [PluginRule] = []
+        for name in recommendedRepositoryPluginNames where !installedNames.contains(name) && recommendedAvailableNames.contains(name) {
+            do {
+                let plugin = try await fetchRepositoryPlugin(name: name)
+                guard plugin.useNativePlayer else { continue }
+                rules.append(plugin)
+            } catch {
+                print("PluginManager: 推荐规则 \(name) 下载失败: \(error.localizedDescription)")
+            }
+        }
+        return rules
+    }
+
+    private func mergePlugins(preferred: [PluginRule], fallback: [PluginRule]) -> [PluginRule] {
+        var seen = Set<String>()
+        var merged: [PluginRule] = []
+
+        for plugin in preferred + fallback {
+            guard !seen.contains(plugin.name) else { continue }
+            seen.insert(plugin.name)
+            merged.append(plugin)
+        }
+
+        return merged
     }
 
     private func loadPersistedPlugins() throws -> [PluginRule] {
@@ -135,11 +205,47 @@ actor PluginManager {
     }
 
     private func setPlugins(_ rules: [PluginRule]) {
-        plugins = rules
+        let normalizedRules = rules.map(normalizedPlugin)
+        plugins = normalizedRules
         pluginsByName = [:]
-        for rule in rules {
+        for rule in normalizedRules {
             pluginsByName[rule.name] = rule
         }
+    }
+
+    private func normalizedPlugin(_ plugin: PluginRule) -> PluginRule {
+        guard plugin.name == "gugu3" else { return plugin }
+
+        return PluginRule(
+            api: plugin.api,
+            type: plugin.type,
+            name: plugin.name,
+            version: plugin.version,
+            muliSources: plugin.muliSources,
+            useWebview: plugin.useWebview,
+            useNativePlayer: plugin.useNativePlayer,
+            usePost: plugin.usePost,
+            useLegacyParser: plugin.useLegacyParser,
+            userAgent: plugin.userAgent,
+            baseURL: plugin.baseURL,
+            searchURL: plugin.searchURL,
+            searchList: "//div[contains(concat(' ', normalize-space(@class), ' '), ' public-list-box ') and contains(concat(' ', normalize-space(@class), ' '), ' search-box ')]",
+            searchName: ".//div[contains(concat(' ', normalize-space(@class), ' '), ' thumb-txt ')]",
+            searchResult: ".//a[contains(concat(' ', normalize-space(@class), ' '), ' public-list-exp ')]",
+            chapterRoads: plugin.chapterRoads,
+            chapterResult: plugin.chapterResult,
+            referer: plugin.referer,
+            adBlocker: plugin.adBlocker,
+            antiCrawlerConfig: plugin.antiCrawlerConfig,
+            sourceSearch: plugin.sourceSearch,
+            capability: plugin.capability,
+            fallback: plugin.fallback,
+            observability: plugin.observability,
+            nativeResolver: plugin.nativeResolver,
+            mediaPatterns: plugin.mediaPatterns,
+            iframePatterns: plugin.iframePatterns,
+            playbackHeaders: plugin.playbackHeaders
+        )
     }
 
     private func bundledPluginURLs() -> [URL] {
@@ -210,9 +316,10 @@ actor PluginManager {
     }
 
     func resetToBundledPlugins() async throws {
-        let bundledRules = try loadBundledPlugins()
-        try savePlugins(bundledRules)
-        setPlugins(bundledRules)
+        UserDefaults.standard.removeObject(forKey: recommendedBootstrapFlagKey)
+        let defaultRules = try await loadDefaultPlugins()
+        try savePlugins(defaultRules)
+        setPlugins(defaultRules)
     }
 
     func importSharedPlugin(_ value: String) async throws -> PluginRule {
@@ -224,13 +331,13 @@ actor PluginManager {
     // MARK: - Rule Repository
 
     func fetchRepositoryIndex() async throws -> [PluginRepositoryItem] {
-        let data = try await downloadRepositoryFile(fileName: "index.json", pluginName: nil)
+        let data = try await downloadRepositoryFile(fileName: "index.json")
         return try JSONDecoder().decode([PluginRepositoryItem].self, from: data)
     }
 
     func fetchRepositoryPlugin(name: String) async throws -> PluginRule {
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        let data = try await downloadRepositoryFile(fileName: encodedName + ".json", pluginName: name)
+        let data = try await downloadRepositoryFile(fileName: encodedName + ".json")
         let plugin = try JSONDecoder().decode(PluginRule.self, from: data)
         guard Int(plugin.api) ?? 0 <= maxSupportedAPILevel else {
             throw PluginError.incompatibleAPI(plugin.api)
@@ -238,7 +345,7 @@ actor PluginManager {
         return plugin
     }
 
-    private func downloadRepositoryFile(fileName: String, pluginName: String?) async throws -> Data {
+    private func downloadRepositoryFile(fileName: String) async throws -> Data {
         var failureMessages: [String] = []
 
         for baseURL in repositoryBaseURLs {
@@ -257,20 +364,6 @@ actor PluginManager {
             }
         }
 
-        if SettingsRepository.shared.serverProxyEnabled {
-            do {
-                let serverAPI = ServerAPI.shared
-                if let pluginName {
-                    return try await serverAPI.fetchRuleRepositoryPlugin(name: pluginName)
-                }
-                return try await serverAPI.fetchRuleRepositoryIndex()
-            } catch {
-                let message = error.localizedDescription
-                failureMessages.append("server proxy: \(message)")
-                print("PluginManager: 规则仓库服务器代理失败 \(fileName): \(message)")
-            }
-        }
-
         throw PluginError.repositoryDownloadFailed(fileName, failureMessages.joined(separator: "; "))
     }
 
@@ -278,6 +371,33 @@ actor PluginManager {
         let plugin = try await fetchRepositoryPlugin(name: name)
         try await upsertPlugin(plugin)
         return plugin
+    }
+
+    func installRecommendedRepositoryPlugins() async throws -> Int {
+        let installedNames = Set(plugins.map(\.name))
+        let recommendedRules = try await fetchRecommendedRepositoryPlugins(excluding: installedNames)
+        guard !recommendedRules.isEmpty else {
+            UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
+            return 0
+        }
+
+        var existingRulesByName: [String: PluginRule] = [:]
+        for plugin in plugins {
+            existingRulesByName[plugin.name] = plugin
+        }
+        var recommendedRulesByName: [String: PluginRule] = [:]
+        for plugin in recommendedRules {
+            recommendedRulesByName[plugin.name] = plugin
+        }
+        let orderedRecommendedRules = recommendedRepositoryPluginNames.compactMap { name in
+            recommendedRulesByName[name] ?? existingRulesByName[name]
+        }
+        let nonRecommendedRules = plugins.filter { !recommendedRepositoryPluginNames.contains($0.name) }
+        let merged = mergePlugins(preferred: orderedRecommendedRules, fallback: nonRecommendedRules)
+        setPlugins(merged)
+        try savePlugins()
+        UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
+        return recommendedRules.count
     }
 
     func updateInstalledPluginsFromRepository() async throws -> Int {
@@ -337,13 +457,18 @@ actor PluginManager {
 
     /// Search using all available plugins
     func search(keyword: String) async throws -> [SearchItem] {
-        let activePlugins = plugins
+        let activePlugins = plugins.filter { $0.playbackCapability.searchSupported }
+        let timeoutNanoseconds = searchTimeoutNanoseconds
 
         return await withTaskGroup(of: [SearchItem].self) { group in
             for plugin in activePlugins {
                 group.addTask {
                     do {
-                        return try await Self.searchWithPluginRule(plugin: plugin, keyword: keyword)
+                        return try await Self.searchWithPluginTimeout(
+                            plugin: plugin,
+                            keyword: keyword,
+                            timeoutNanoseconds: timeoutNanoseconds
+                        )
                     } catch {
                         print("Plugin \(plugin.name) search failed: \(error)")
                         return []
@@ -359,20 +484,76 @@ actor PluginManager {
         }
     }
 
-    /// Search using a specific plugin
-    func searchWithPlugin(plugin: PluginRule, keyword: String) async throws -> [SearchItem] {
-        try await Self.searchWithPluginRule(plugin: plugin, keyword: keyword)
+    private static func searchWithPluginTimeout(
+        plugin: PluginRule,
+        keyword: String,
+        timeoutNanoseconds: UInt64
+    ) async throws -> [SearchItem] {
+        try await withThrowingTaskGroup(of: [SearchItem].self) { group in
+            group.addTask {
+                try await PluginManager.shared.searchWithPlugin(plugin: plugin, keyword: keyword)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw PluginSearchTimeoutError(pluginName: plugin.name)
+            }
+            defer { group.cancelAll() }
+
+            guard let results = try await group.next() else {
+                throw CancellationError()
+            }
+            return results
+        }
     }
 
-    private static func searchWithPluginRule(plugin: PluginRule, keyword: String) async throws -> [SearchItem] {
-        let api = APIClient.shared
-
+    /// Search using a specific plugin
+    func searchWithPlugin(plugin: PluginRule, keyword: String) async throws -> [SearchItem] {
         let searchURL = plugin.buildSearchURL(keyword: keyword)
         guard let url = URL(string: searchURL) else {
             throw PluginError.invalidURL(searchURL)
         }
 
-        let headers = searchHTTPHeaders(for: plugin)
+        let headers = Self.searchHTTPHeaders(for: plugin, requestURL: url)
+        await warmUpSearchSessionIfNeeded(plugin: plugin, requestURL: url, headers: headers)
+        return try await Self.searchWithPluginRule(plugin: plugin, keyword: keyword, resolvedURL: url, headers: headers)
+    }
+
+    private func warmUpSearchSessionIfNeeded(plugin: PluginRule, requestURL: URL, headers: [String: String]) async {
+        guard let warmupURL = Self.warmupURL(for: plugin, fallbackURL: requestURL),
+              let warmupKey = Self.hostKey(for: warmupURL),
+              !searchWarmupHosts.contains(warmupKey) else {
+            return
+        }
+
+        searchWarmupHosts.insert(warmupKey)
+
+        var warmupHeaders = headers
+        warmupHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+        warmupHeaders["Referer"] = Self.defaultReferer(for: plugin)
+        warmupHeaders["Sec-Fetch-Site"] = "none"
+
+        do {
+            _ = try await APIClient.shared.fetchHTML(url: warmupURL, headers: warmupHeaders, timeout: 6)
+            print("PluginManager: \(plugin.name) 搜索预热成功 \(warmupURL.host ?? warmupURL.absoluteString)")
+        } catch {
+            print("PluginManager: \(plugin.name) 搜索预热失败: \(error.localizedDescription)")
+        }
+    }
+
+    private static func searchWithPluginRule(
+        plugin: PluginRule,
+        keyword: String,
+        resolvedURL: URL? = nil,
+        headers resolvedHeaders: [String: String]? = nil
+    ) async throws -> [SearchItem] {
+        let api = APIClient.shared
+
+        let searchURL = resolvedURL?.absoluteString ?? plugin.buildSearchURL(keyword: keyword)
+        guard let url = resolvedURL ?? URL(string: searchURL) else {
+            throw PluginError.invalidURL(searchURL)
+        }
+
+        var headers = resolvedHeaders ?? searchHTTPHeaders(for: plugin, requestURL: url)
         let html: String
 
         if plugin.usePost == true {
@@ -390,6 +571,10 @@ actor PluginManager {
                 throw PluginError.invalidURL(searchURL)
             }
 
+            if let origin = origin(for: postURL) {
+                headers["Origin"] = origin
+            }
+            headers["Sec-Fetch-Site"] = secFetchSite(requestURL: postURL, plugin: plugin)
             html = try await api.postFormHTML(url: postURL, form: form, headers: headers)
         } else {
             html = try await api.fetchHTML(url: url, headers: headers)
@@ -439,15 +624,23 @@ actor PluginManager {
         return value
     }
 
-    private static func searchHTTPHeaders(for plugin: PluginRule) -> [String: String] {
+    private static func searchHTTPHeaders(for plugin: PluginRule, requestURL: URL? = nil) -> [String: String] {
         var headers: [String: String] = [
             "User-Agent": plugin.userAgent.isEmpty
                 ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
                 : plugin.userAgent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Referer": plugin.baseURL.hasSuffix("/") ? plugin.baseURL : plugin.baseURL + "/"
+            "DNT": "1",
+            "Pragma": "no-cache",
+            "Referer": defaultReferer(for: plugin),
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": secFetchSite(requestURL: requestURL, plugin: plugin),
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1"
         ]
 
         if let referer = plugin.referer, !referer.isEmpty {
@@ -455,6 +648,57 @@ actor PluginManager {
         }
 
         return headers
+    }
+
+    private static func defaultReferer(for plugin: PluginRule) -> String {
+        plugin.baseURL.hasSuffix("/") ? plugin.baseURL : plugin.baseURL + "/"
+    }
+
+    private static func warmupURL(for plugin: PluginRule, fallbackURL: URL) -> URL? {
+        if let baseURL = URL(string: plugin.baseURL), baseURL.host != nil {
+            return baseURL
+        }
+
+        var components = URLComponents(url: fallbackURL, resolvingAgainstBaseURL: false)
+        components?.path = "/"
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url
+    }
+
+    private static func hostKey(for url: URL) -> String? {
+        guard let host = url.host?.lowercased() else { return nil }
+        return "\(url.scheme?.lowercased() ?? "https")://\(host)"
+    }
+
+    private static func origin(for url: URL) -> String? {
+        guard let scheme = url.scheme, let host = url.host else { return nil }
+        if let port = url.port {
+            return "\(scheme)://\(host):\(port)"
+        }
+        return "\(scheme)://\(host)"
+    }
+
+    private static func secFetchSite(requestURL: URL?, plugin: PluginRule) -> String {
+        guard let requestURL,
+              let requestHost = requestURL.host?.lowercased(),
+              let baseHost = URL(string: plugin.baseURL)?.host?.lowercased() else {
+            return "same-origin"
+        }
+
+        if requestHost == baseHost {
+            return "same-origin"
+        }
+
+        let requestRoot = rootDomain(for: requestHost)
+        let baseRoot = rootDomain(for: baseHost)
+        return requestRoot == baseRoot ? "same-site" : "cross-site"
+    }
+
+    private static func rootDomain(for host: String) -> String {
+        let parts = host.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return host }
+        return parts.suffix(2).joined(separator: ".")
     }
 
     private static func buildSearchFullURL(base: String, path: String) -> String {

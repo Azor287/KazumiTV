@@ -242,6 +242,9 @@ struct PlayerView: View {
             if hasError {
                 recordPlaybackFailureIfNeeded()
                 cancelControlsAutoHide()
+                startPlaybackTask {
+                    await recoverFromPlaybackFailure()
+                }
             }
         }
         .onAppear {
@@ -892,7 +895,7 @@ struct PlayerView: View {
                 return
             }
 
-            print("PlayerView: 播放启动长时间无进展，准备切换线路: \(activeEpisode.pageURL ?? "nil")")
+            print("PlayerView: 播放启动长时间无进展，准备切换线路: \(URLLogSanitizer.redacted(activeEpisode.pageURL))")
             recordPlaybackFailureIfNeeded()
 
             if await switchToNextRoadForCurrentEpisode() {
@@ -907,6 +910,25 @@ struct PlayerView: View {
         }
     }
 
+    private func recoverFromPlaybackFailure() async {
+        guard activePlaybackSession != nil,
+              viewModel.error != nil,
+              !Task.isCancelled else {
+            return
+        }
+
+        playbackStartupTask?.cancel()
+        print("PlayerView: 播放失败，准备立即切换线路: \(URLLogSanitizer.redacted(activeEpisode.pageURL))")
+
+        if await switchToNextRoadForCurrentEpisode() {
+            return
+        }
+
+        if await switchToNextSourceForCurrentEpisode() {
+            return
+        }
+    }
+
     private func switchToNextRoadForCurrentEpisode() async -> Bool {
         guard let activePlaybackSession,
               let currentRoad = activeRoad,
@@ -914,10 +936,10 @@ struct PlayerView: View {
             return false
         }
 
-        let currentEpisodeIndex = currentRoad.episodes.firstIndex { candidate in
+        let fallbackEpisodeIndex = currentRoad.episodes.firstIndex { candidate in
             candidate.id == activeEpisode.id && candidate.pageURL == activeEpisode.pageURL
         } ?? currentRoad.episodes.firstIndex { candidate in
-            candidate.episodeNumber == activeEpisode.episodeNumber
+            hasSameEpisodeIdentity(candidate, activeEpisode)
         } ?? 0
 
         let orderedRoads = Array(activePlaybackSession.roads.dropFirst(currentRoadIndex + 1)) +
@@ -931,13 +953,12 @@ struct PlayerView: View {
             return false
         }
 
-        let nextEpisode: Episode
-        if nextRoad.episodes.indices.contains(currentEpisodeIndex) {
-            nextEpisode = nextRoad.episodes[currentEpisodeIndex]
-        } else if let matchingEpisode = nextRoad.episodes.first(where: { $0.episodeNumber == activeEpisode.episodeNumber }) {
-            nextEpisode = matchingEpisode
-        } else {
-            nextEpisode = nextRoad.episodes[0]
+        guard let nextEpisode = matchingEpisode(
+            in: nextRoad.episodes,
+            target: activeEpisode,
+            fallbackIndex: fallbackEpisodeIndex
+        ) else {
+            return false
         }
 
         print("PlayerView: 自动切换到线路 \(nextRoad.name), episode=\(nextEpisode.displayName)")
@@ -988,10 +1009,11 @@ struct PlayerView: View {
                     continue
                 }
 
-                let targetEpisodeNumber = activeEpisode.episodeNumber
                 let targetIndex = activeEpisodes.firstIndex { episode in
                     episode.id == activeEpisode.id && episode.pageURL == activeEpisode.pageURL
-                } ?? max(0, targetEpisodeNumber - 1)
+                } ?? activeEpisodes.firstIndex { episode in
+                    hasSameEpisodeIdentity(episode, activeEpisode)
+                } ?? max(0, activeEpisode.episodeNumber - 1)
 
                 guard let selectedRoad = preferredPlaybackRoad(from: roads, pluginName: candidate.pluginName),
                       !selectedRoad.episodes.isEmpty else {
@@ -1000,13 +1022,14 @@ struct PlayerView: View {
                     continue
                 }
 
-                let nextEpisode: Episode
-                if let matchingEpisode = selectedRoad.episodes.first(where: { $0.episodeNumber == targetEpisodeNumber }) {
-                    nextEpisode = matchingEpisode
-                } else if selectedRoad.episodes.indices.contains(targetIndex) {
-                    nextEpisode = selectedRoad.episodes[targetIndex]
-                } else {
-                    nextEpisode = selectedRoad.episodes[0]
+                guard let nextEpisode = matchingEpisode(
+                    in: selectedRoad.episodes,
+                    target: activeEpisode,
+                    fallbackIndex: targetIndex
+                ) else {
+                    failedPlaybackSourceKeys.insert(candidateKey)
+                    SourcePlaybackPreferenceStore.shared.recordFailure(pluginName: candidate.pluginName)
+                    continue
                 }
 
                 print("PlayerView: 自动切换到播放源 \(candidate.pluginName), 线路 \(selectedRoad.name), episode=\(nextEpisode.displayName)")
@@ -1037,6 +1060,47 @@ struct PlayerView: View {
         }
 
         return false
+    }
+
+    private func matchingEpisode(in episodes: [Episode], target: Episode, fallbackIndex: Int) -> Episode? {
+        if let match = episodes.first(where: { hasSameEpisodeIdentity($0, target) }) {
+            return match
+        }
+
+        if episodes.indices.contains(fallbackIndex) {
+            return episodes[fallbackIndex]
+        }
+
+        return episodes.first
+    }
+
+    private func hasSameEpisodeIdentity(_ lhs: Episode, _ rhs: Episode) -> Bool {
+        let leftTitle = normalizedEpisodeTitle(lhs.displayName)
+        let rightTitle = normalizedEpisodeTitle(rhs.displayName)
+        if !leftTitle.isEmpty, leftTitle == rightTitle {
+            return true
+        }
+
+        let leftOrdinal = episodeOrdinal(from: lhs.displayName)
+        let rightOrdinal = episodeOrdinal(from: rhs.displayName)
+        if let leftOrdinal, let rightOrdinal {
+            return leftOrdinal == rightOrdinal
+        }
+
+        return lhs.episodeNumber == rhs.episodeNumber
+    }
+
+    private func normalizedEpisodeTitle(_ value: String) -> String {
+        value
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+    }
+
+    private func episodeOrdinal(from value: String) -> Int? {
+        guard let range = value.range(of: #"(\d+)"#, options: .regularExpression) else {
+            return nil
+        }
+        return Int(value[range])
     }
 
     private func loadPlaybackRoads(from source: SearchItem) async throws -> [PlaybackRoad] {

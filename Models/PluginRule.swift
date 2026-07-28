@@ -28,6 +28,14 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
     let referer: String?
     let adBlocker: Bool?
     let antiCrawlerConfig: AntiCrawlerConfig?
+    let sourceSearch: PluginSearchCapability?
+    let capability: PluginCapability?
+    let fallback: PluginFallbackCapability?
+    let observability: PluginObservability?
+    var nativeResolver: String? = nil
+    var mediaPatterns: [String]? = nil
+    var iframePatterns: [String]? = nil
+    var playbackHeaders: [String: String]? = nil
 
     var id: String { name }
 
@@ -36,6 +44,8 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
         case usePost, useLegacyParser
         case userAgent, baseURL, searchURL, searchList, searchName, searchResult
         case chapterRoads, chapterResult, referer, adBlocker, antiCrawlerConfig
+        case sourceSearch = "search", capability, fallback, observability
+        case nativeResolver, mediaPatterns, iframePatterns, playbackHeaders
     }
 
     func buildSearchURL(keyword: String) -> String {
@@ -68,7 +78,11 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
             chapterResult: "",
             referer: "",
             adBlocker: false,
-            antiCrawlerConfig: nil
+            antiCrawlerConfig: nil,
+            sourceSearch: nil,
+            capability: nil,
+            fallback: nil,
+            observability: nil
         )
     }
 

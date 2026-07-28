@@ -28,7 +28,7 @@ jobs:
       - name: Show available SDKs
         run: xcodebuild -showsdks
 
-      - name: Build Debug for tvOS Simulator
+      - name: Build app and tests for tvOS Simulator
         run: |
           xcodebuild \
             -project KazumiTV.xcodeproj \
@@ -36,4 +36,4 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=tvOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build-for-testing

@@ -17,6 +17,9 @@ actor APIClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
+        config.httpShouldSetCookies = true
+        config.httpCookieAcceptPolicy = .always
+        config.httpCookieStorage = .shared
         self.session = URLSession(configuration: config)
 
         self.decoder = JSONDecoder()
@@ -73,11 +76,15 @@ actor APIClient {
         return (data, httpResponse)
     }
 
-    func fetchHTML(url: URL, headers: [String: String] = [:]) async throws -> String {
+    func fetchHTML(url: URL, headers: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         request.setValue("text/html", forHTTPHeaderField: "Accept")
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.15.3 (KHTML, like Gecko) Version/17.0 Safari/605.15.3", forHTTPHeaderField: "User-Agent")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
@@ -89,12 +96,20 @@ actor APIClient {
             throw APIError.invalidResponse
         }
 
+        if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
+            throw APIError.webChallenge(signal)
+        }
+
         guard (200...299).contains(httpResponse.statusCode) else {
             throw APIError.httpError(statusCode: httpResponse.statusCode)
         }
 
-        guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+        guard let html = Self.htmlString(from: data) else {
             throw APIError.decodingError
+        }
+
+        guard !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyHTML
         }
 
         return html
@@ -105,6 +120,8 @@ actor APIClient {
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("text/html", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.15.3 (KHTML, like Gecko) Version/17.0 Safari/605.15.3", forHTTPHeaderField: "User-Agent")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
@@ -122,15 +139,40 @@ actor APIClient {
             throw APIError.invalidResponse
         }
 
+        if let signal = WebChallengeDetector.detect(data: data, response: httpResponse) {
+            throw APIError.webChallenge(signal)
+        }
+
         guard (200...299).contains(httpResponse.statusCode) else {
             throw APIError.httpError(statusCode: httpResponse.statusCode)
         }
 
-        guard let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+        guard let html = Self.htmlString(from: data) else {
             throw APIError.decodingError
         }
 
+        guard !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw APIError.emptyHTML
+        }
+
         return html
+    }
+
+    private static func htmlString(from data: Data) -> String? {
+        guard let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            return nil
+        }
+
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("\""),
+           trimmed.hasSuffix("\""),
+           let jsonData = trimmed.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(String.self, from: jsonData),
+           decoded.localizedCaseInsensitiveContains("<html") || decoded.localizedCaseInsensitiveContains("<!doctype") {
+            return decoded
+        }
+
+        return raw
     }
 
     private func percentEncodeFormComponent(_ value: String) -> String {
@@ -173,6 +215,8 @@ enum APIError: LocalizedError {
     case httpError(statusCode: Int)
     case decodingError
     case networkError(Error)
+    case emptyHTML
+    case webChallenge(WebChallengeSignal)
 
     var errorDescription: String? {
         switch self {
@@ -184,6 +228,15 @@ enum APIError: LocalizedError {
             return "Failed to decode response"
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
+        case .emptyHTML:
+            return "来源返回空页面"
+        case .webChallenge(let signal):
+            switch signal.kind {
+            case .challenge:
+                return "\(signal.displayName) 需要真实浏览器验证"
+            case .captcha:
+                return "\(signal.displayName) 需要验证码验证"
+            }
         }
     }
 }
