@@ -89,14 +89,34 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
           UISceneConfigurations: {}
+  KazumiTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: KazumiTVTests
+    dependencies:
+      - target: KazumiTV
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kazumi.tv.tests
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   KazumiTV:
     build:
       targets:
         KazumiTV: all
+        KazumiTVTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      coverageTargets:
+        - KazumiTV
+      targets:
+        - name: KazumiTVTests
+          parallelizable: false
     profile:
       config: Release
     analyze:
