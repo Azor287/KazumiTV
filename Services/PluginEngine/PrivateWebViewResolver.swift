@@ -15,6 +15,10 @@ import Darwin
     init(source: String, injectionTime: Int, forMainFrameOnly: Bool)
 }
 
+private enum PrivateWebKitRuntime {
+    static let handle = dlopen("/System/Library/Frameworks/WebKit.framework/WebKit", RTLD_NOW)
+}
+
 @MainActor
 final class PrivateWebViewResolver {
     static let shared = PrivateWebViewResolver()
@@ -67,17 +71,18 @@ private final class PrivateWebViewResolution: NSObject {
     private let plugin: PluginRule
     private let continuation: CheckedContinuation<VideoSource, Error>
     private let onFinish: () -> Void
-    private let timeoutNanoseconds: UInt64 = 14_000_000_000
+    private let timeoutNanoseconds: UInt64 = 30_000_000_000
     private let pollIntervalNanoseconds: UInt64 = 900_000_000
 
     private var webView: NSObject?
     private var runtimeKind: RuntimeKind?
-    private var webKitHandle: UnsafeMutableRawPointer?
     private var pollTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
     private var isEvaluatingJavaScript = false
     private var rejectedCandidateURLs = Set<String>()
     private var pendingCandidateValues: [String] = []
+    private var visitedNestedPageURLs = Set<String>()
+    private var nestedNavigationDepth = 0
     private var isCompleted = false
 
     init(
@@ -127,9 +132,10 @@ private final class PrivateWebViewResolution: NSObject {
     }
 
     private func makeWKWebView() -> NSObject? {
-        webKitHandle = dlopen("/System/Library/Frameworks/WebKit.framework/WebKit", RTLD_NOW)
+        guard PrivateWebKitRuntime.handle != nil else {
+            return nil
+        }
         guard let webViewClass = NSClassFromString("WKWebView") as? NSObject.Type else {
-            closeWebKitHandle()
             return nil
         }
 
@@ -137,14 +143,12 @@ private final class PrivateWebViewResolution: NSObject {
         guard let configuration = instance.value(forKey: "configuration") as? NSObject,
               let contentController = configuration.value(forKey: "userContentController") as? NSObject,
               installInterceptionScript(in: contentController) else {
-            closeWebKitHandle()
             return nil
         }
 
         configuration.setValue(true, forKey: "allowsInlineMediaPlayback")
         let setNavigationDelegate = NSSelectorFromString("setNavigationDelegate:")
         guard instance.responds(to: setNavigationDelegate) else {
-            closeWebKitHandle()
             return nil
         }
         _ = instance.perform(setNavigationDelegate, with: self)
@@ -236,6 +240,22 @@ private final class PrivateWebViewResolution: NSObject {
     @objc(webView:didFinishNavigation:)
     private func webView(_ webView: AnyObject, didFinish navigation: AnyObject?) {
         attemptExtraction()
+        if let webView = webView as? NSObject {
+            attemptNestedFrameNavigation(in: webView)
+        }
+    }
+
+    @objc(webView:decidePolicyForNavigationAction:decisionHandler:)
+    private func webView(
+        _ webView: AnyObject,
+        decidePolicyFor action: AnyObject,
+        decisionHandler: @escaping @convention(block) (Int) -> Void
+    ) {
+        if let request = action.value(forKey: "request") as? URLRequest,
+           let url = request.url {
+            enqueueCandidateValues([url.absoluteString])
+        }
+        decisionHandler(1)
     }
 
     @objc(webView:didFailProvisionalNavigation:withError:)
@@ -362,6 +382,63 @@ private final class PrivateWebViewResolution: NSObject {
         _ = webView.perform(selector, with: script, with: completion)
     }
 
+    private func attemptNestedFrameNavigation(in webView: NSObject) {
+        guard !isCompleted, nestedNavigationDepth < 3 else { return }
+        let selector = NSSelectorFromString("evaluateJavaScript:completionHandler:")
+        guard webView.responds(to: selector) else { return }
+
+        let script = """
+        (function() {
+          var frames = document.querySelectorAll('iframe[src], embed[src]');
+          for (var i = 0; i < frames.length; i++) {
+            var value = frames[i].src || frames[i].getAttribute('src');
+            if (value) return value;
+          }
+          return '';
+        })()
+        """
+        let completion: @convention(block) (Any?, Error?) -> Void = { [weak self] result, _ in
+            Task { @MainActor in
+                guard let self,
+                      !self.isCompleted,
+                      let value = result as? String,
+                      let url = URL(string: value, relativeTo: self.pageURL)?.absoluteURL,
+                      self.isLikelyNestedPlayerURL(url),
+                      !self.visitedNestedPageURLs.contains(url.absoluteString) else {
+                    return
+                }
+
+                self.visitedNestedPageURLs.insert(url.absoluteString)
+                self.nestedNavigationDepth += 1
+                let request = NSMutableURLRequest(url: url)
+                for (name, value) in self.requestHeaders() where !value.isEmpty {
+                    request.setValue(value, forHTTPHeaderField: name)
+                }
+                _ = webView.perform(NSSelectorFromString("stopLoading"))
+                _ = webView.perform(NSSelectorFromString("loadRequest:"), with: request)
+            }
+        }
+        _ = webView.perform(selector, with: script, with: completion)
+    }
+
+    private func isLikelyNestedPlayerURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              !isDirectMediaURL(url) else {
+            return false
+        }
+        let value = url.absoluteString.lowercased()
+        let path = url.path.lowercased()
+        let host = url.host?.lowercased() ?? ""
+        return value.contains("url=")
+            || path.contains("/vip")
+            || path.contains("player")
+            || path.contains("parse")
+            || path.contains("/jx")
+            || host.hasPrefix("jx.")
+            || host.contains("player")
+    }
+
     private func candidateURLs(from values: [String]) -> [URL] {
         var seen = Set<String>()
         var urls: [URL] = []
@@ -486,7 +563,16 @@ private final class PrivateWebViewResolution: NSObject {
         if isPlaylistURL(url) { return true }
         let value = url.absoluteString.lowercased()
         let path = url.path.lowercased()
-        if path.hasSuffix(".mp4") || path.hasSuffix(".m4v") || path.hasSuffix(".mov") {
+        let extensionName = url.pathExtension.lowercased()
+        let rejectedExtensions: Set<String> = [
+            "js", "css", "html", "htm", "json", "xml",
+            "jpg", "jpeg", "png", "gif", "webp", "svg", "ico",
+            "woff", "woff2", "ttf", "otf"
+        ]
+        if rejectedExtensions.contains(extensionName) {
+            return false
+        }
+        if ["mp4", "m4v", "mov", "m4a", "m4s", "ts"].contains(extensionName) {
             return true
         }
         if value.contains("mime_type=video") || value.contains("video_mp4") {
@@ -494,7 +580,9 @@ private final class PrivateWebViewResolution: NSObject {
         }
         let host = url.host?.lowercased() ?? ""
         let hostMarkers = ["toutiao", "byte", "ixigua", "bilivideo", "bcevod", "alicdn", "akamaized", "mgtv"]
+        let mediaPathMarkers = ["/video/", "/media/", "/play/", "video_id=", "vid=", "mime=video"]
         return hostMarkers.contains { host.contains($0) }
+            && mediaPathMarkers.contains { value.contains($0) || path.contains($0) }
     }
 
     private func isPlaylistURL(_ url: URL) -> Bool {
@@ -632,7 +720,8 @@ private final class PrivateWebViewResolution: NSObject {
         validationTask?.cancel()
         isEvaluatingJavaScript = false
         pendingCandidateValues.removeAll()
-        if let webView {
+        let retiringWebView = webView
+        if let webView = retiringWebView {
             let stopLoading = NSSelectorFromString("stopLoading")
             if webView.responds(to: stopLoading) {
                 _ = webView.perform(stopLoading)
@@ -650,6 +739,10 @@ private final class PrivateWebViewResolution: NSObject {
                     if contentController.responds(to: removeHandler) {
                         _ = contentController.perform(removeHandler, with: "KazumiMediaIntercept")
                     }
+                    let removeAllScripts = NSSelectorFromString("removeAllUserScripts")
+                    if contentController.responds(to: removeAllScripts) {
+                        _ = contentController.perform(removeAllScripts)
+                    }
                 }
             case .uiWebView:
                 let setDelegate = NSSelectorFromString("setDelegate:")
@@ -660,18 +753,43 @@ private final class PrivateWebViewResolution: NSObject {
                 break
             }
         }
-        (webView as? UIView)?.removeFromSuperview()
+        (retiringWebView as? UIView)?.removeFromSuperview()
         webView = nil
+        if runtimeKind == .wkWebView, let retiringWebView {
+            PrivateWebViewDrainPool.shared.retire(retiringWebView)
+        }
         runtimeKind = nil
-        closeWebKitHandle()
         onFinish()
         continuation.resume(with: result)
     }
+}
 
-    private func closeWebKitHandle() {
-        if let webKitHandle {
-            dlclose(webKitHandle)
-            self.webKitHandle = nil
+@MainActor
+private final class PrivateWebViewDrainPool {
+    static let shared = PrivateWebViewDrainPool()
+
+    private let retirementDelayNanoseconds: UInt64 = 1_000_000_000
+    private var retiringViews: [ObjectIdentifier: NSObject] = [:]
+
+    private init() {}
+
+    func retire(_ webView: NSObject) {
+        let key = ObjectIdentifier(webView)
+        retiringViews[key] = webView
+        let loadBlank = NSSelectorFromString("loadHTMLString:baseURL:")
+        if webView.responds(to: loadBlank) {
+            _ = webView.perform(loadBlank, with: "", with: nil)
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: self.retirementDelayNanoseconds)
+            guard let webView = self.retiringViews[key] else { return }
+            let stopLoading = NSSelectorFromString("stopLoading")
+            if webView.responds(to: stopLoading) {
+                _ = webView.perform(stopLoading)
+            }
+            self.retiringViews.removeValue(forKey: key)
         }
     }
 }
@@ -762,7 +880,7 @@ private enum PrivateWebViewMediaProbe {
             let (_, response) = try await session.bytes(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...399).contains(httpResponse.statusCode),
-                  !isHTMLLikeContentType(httpResponse) else {
+                  isLikelyMediaResponse(httpResponse, url: url) else {
                 print("PrivateWebViewResolver: direct candidate validation failed: \(redactedURLString(url))")
                 return false
             }
@@ -781,9 +899,24 @@ private enum PrivateWebViewMediaProbe {
             || path.hasSuffix("/playlist")
     }
 
-    private static func isHTMLLikeContentType(_ response: HTTPURLResponse) -> Bool {
-        let contentType = (response.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-        return contentType.contains("text/html") || contentType.contains("application/xhtml")
+    private static func isLikelyMediaResponse(_ response: HTTPURLResponse, url: URL) -> Bool {
+        let contentType = (response.value(forHTTPHeaderField: "Content-Type") ?? "")
+            .lowercased()
+            .split(separator: ";", maxSplits: 1)
+            .first
+            .map(String.init) ?? ""
+        if contentType.hasPrefix("video/")
+            || contentType.hasPrefix("audio/")
+            || contentType.contains("mpegurl")
+            || contentType == "application/octet-stream" {
+            return true
+        }
+        if response.statusCode == 206
+            || response.value(forHTTPHeaderField: "Content-Range") != nil {
+            return true
+        }
+        let extensionName = url.pathExtension.lowercased()
+        return ["mp4", "m4v", "mov", "m4a", "m4s", "ts"].contains(extensionName)
     }
 
     private static func redactedURLString(_ url: URL) -> String {

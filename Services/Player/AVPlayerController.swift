@@ -210,7 +210,7 @@ class AVPlayerController: ObservableObject {
     }
 
     private func resumePlaybackWhenReady(for seekGeneration: UInt64) {
-        guard let player else {
+        guard player != nil else {
             shouldResumePlaybackAfterSeek = false
             isBuffering = false
             return
@@ -218,27 +218,10 @@ class AVPlayerController: ObservableObject {
 
         resumeGeneration &+= 1
         let currentResumeGeneration = resumeGeneration
-        let targetRate = max(playbackRate, 0.1)
-
-        player.preroll(atRate: targetRate) { [weak self] finished in
-            Task { @MainActor in
-                guard let self,
-                      self.seekGeneration == seekGeneration,
-                      self.resumeGeneration == currentResumeGeneration,
-                      self.shouldResumePlaybackAfterSeek else {
-                    return
-                }
-
-                if finished || self.playerItem?.isPlaybackLikelyToKeepUp == true {
-                    self.resumePlaybackIfPending(
-                        seekGeneration: seekGeneration,
-                        resumeGeneration: currentResumeGeneration
-                    )
-                } else {
-                    self.isBuffering = true
-                }
-            }
-        }
+        resumePlaybackIfPending(
+            seekGeneration: seekGeneration,
+            resumeGeneration: currentResumeGeneration
+        )
     }
 
     private func resumePlaybackIfPending(
@@ -259,7 +242,6 @@ class AVPlayerController: ObservableObject {
 
     private func cancelPendingResume() {
         resumeGeneration &+= 1
-        player?.cancelPendingPrerolls()
     }
 
     // MARK: - Observers

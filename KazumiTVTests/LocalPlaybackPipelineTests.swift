@@ -2,6 +2,21 @@ import XCTest
 @testable import KazumiTV
 
 final class LocalPlaybackPipelineTests: XCTestCase {
+    func testDirectMP4BypassesLoopbackProxy() throws {
+        let url = try XCTUnwrap(URL(string: "https://media.example.com/video/movie.mp4?token=fixture"))
+        let source = VideoSource(
+            url: url,
+            quality: "测试",
+            pluginName: "Fixture",
+            referer: "https://media.example.com/watch",
+            headers: ["X-Fixture": "local"]
+        )
+
+        let playbackSource = try LocalHLSProxy.shared.proxiedSource(for: source)
+
+        XCTAssertEqual(playbackSource, source)
+    }
+
     func testCookieJarMatchesDomainPathAndSecureRules() throws {
         let jar = MediaCookieJar()
         let origin = try XCTUnwrap(URL(string: "https://media.example.com/video/master.m3u8"))
