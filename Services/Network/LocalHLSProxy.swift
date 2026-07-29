@@ -542,7 +542,9 @@ final class LocalHLSProxy {
             return false
         }
         let host = url.host?.lowercased() ?? ""
-        return host != "127.0.0.1" && host != "localhost"
+        return host != "127.0.0.1"
+            && host != "localhost"
+            && isPlaylistURL(url)
     }
 
     private func httpsURL(for url: URL) -> URL? {

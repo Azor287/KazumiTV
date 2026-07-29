@@ -9,7 +9,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "3"
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
 
@@ -69,7 +69,7 @@ targets:
         CFBundleDisplayName: KazumiTV
         CFBundleName: KazumiTV
         CFBundleIdentifier: com.kazumi.tv
-        CFBundleVersion: "2"
+        CFBundleVersion: "3"
         CFBundleShortVersionString: "0.2.0"
         DANDANPLAY_APP_ID: "$(DANDANPLAY_APP_ID)"
         DANDANPLAY_APP_SECRET: "$(DANDANPLAY_APP_SECRET)"

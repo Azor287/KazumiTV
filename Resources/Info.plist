@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>DANDANPLAY_APP_ID</key>
 	<string>$(DANDANPLAY_APP_ID)</string>
 	<key>DANDANPLAY_APP_SECRET</key>
