@@ -9,7 +9,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "3"
+    CURRENT_PROJECT_VERSION: "16"
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
 
@@ -38,6 +38,7 @@ targets:
       - path: Models
       - path: ViewModels
       - path: Services
+      - path: Shared
       - path: Resources
     configFiles:
       Debug: Config/KazumiTV.xcconfig
@@ -47,13 +48,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kazumi.tv
         INFOPLIST_FILE: Resources/Info.plist
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) KAZUMI_ENABLE_PRIVATE_WEBVIEW_RESOLVER"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME: LaunchScreenImage
+        ASSETCATALOG_COMPILER_APPICON_NAME: KazumiTVAppIcon
+        ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME: LaunchBrandingV2
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
         TARGETED_DEVICE_FAMILY: "3"
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
     dependencies:
+      - target: KazumiTVTopShelf
+        embed: true
       - package: Fuzi
       - package: SQLite
       - package: Kingfisher
@@ -69,7 +72,7 @@ targets:
         CFBundleDisplayName: KazumiTV
         CFBundleName: KazumiTV
         CFBundleIdentifier: com.kazumi.tv
-        CFBundleVersion: "3"
+        CFBundleVersion: "16"
         CFBundleShortVersionString: "0.2.0"
         DANDANPLAY_APP_ID: "$(DANDANPLAY_APP_ID)"
         DANDANPLAY_APP_SECRET: "$(DANDANPLAY_APP_SECRET)"
@@ -79,7 +82,7 @@ targets:
         CFBundlePackageType: APPL
         CFBundleExecutable: KazumiTV
         UILaunchScreen:
-          UIImageName: LaunchScreenImage
+          UIImageName: LaunchBrandingV2
           UIImageRespectsSafeAreaInsets: false
         UIRequiredDeviceCapabilities:
           - tvOS
@@ -89,6 +92,40 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
           UISceneConfigurations: {}
+        CFBundleURLTypes:
+          - CFBundleURLName: com.kazumi.tv
+            CFBundleURLSchemes:
+              - kazumitv
+  KazumiTVTopShelf:
+    type: app-extension
+    platform: tvOS
+    sources:
+      - path: TopShelf
+      - path: Shared
+      - path: Services/TopShelf/TopShelfRemoteSyncService.swift
+      - path: Resources/Assets.xcassets/KazumiTVAppIcon.brandassets/KazumiTV Top Shelf Wide.imageset/top-shelf-wide.png
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kazumi.tv.topshelf
+        PRODUCT_NAME: KazumiTVTopShelf
+        INFOPLIST_FILE: TopShelf/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        TARGETED_DEVICE_FAMILY: "3"
+    info:
+      path: TopShelf/Info.plist
+      properties:
+        CFBundleDisplayName: KazumiTV Top Shelf
+        CFBundleName: KazumiTVTopShelf
+        CFBundleIdentifier: com.kazumi.tv.topshelf
+        CFBundleVersion: "16"
+        CFBundleShortVersionString: "0.2.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.tv-top-shelf
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ContentProvider"
   KazumiTVTests:
     type: bundle.unit-test
     platform: tvOS

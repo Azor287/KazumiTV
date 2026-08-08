@@ -18,8 +18,19 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.2.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.kazumi.tv</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>kazumitv</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>16</string>
 	<key>DANDANPLAY_APP_ID</key>
 	<string>$(DANDANPLAY_APP_ID)</string>
 	<key>DANDANPLAY_APP_SECRET</key>
@@ -41,7 +52,7 @@
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIImageName</key>
-		<string>LaunchScreenImage</string>
+		<string>LaunchBrandingV2</string>
 		<key>UIImageRespectsSafeAreaInsets</key>
 		<false/>
 	</dict>

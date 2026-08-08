@@ -24,6 +24,10 @@ actor PluginManager {
         "https://cdn.jsdelivr.net/gh/Predidit/KazumiRules@main/",
     ]
     private let recommendedRepositoryPluginNames = [
+        "TvTFun",
+        "xfdmneo",
+    ]
+    private let deprecatedDefaultPluginNames: Set<String> = [
         "MXdm",
         "omofun03",
         "baimao",
@@ -36,10 +40,9 @@ actor PluginManager {
         "yishijie",
         "DM84",
         "AGE",
-        "xfdmneo",
     ]
-    private let recommendedBootstrapFlagKey = "kazumi.pluginRepositoryRecommendedBootstrapped.v1"
-    private let maxSupportedAPILevel = 6
+    private let recommendedBootstrapFlagKey = "kazumi.pluginRepositoryRecommendedBootstrapped.v2"
+    private let maxSupportedAPILevel = 8
     private let pluginsFileName = "plugins.json"
     private let repositoryHeaders = [
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
@@ -62,7 +65,18 @@ actor PluginManager {
 
         let persistedRules = try loadPersistedPlugins()
         if !persistedRules.isEmpty {
-            setPlugins(persistedRules)
+            if !UserDefaults.standard.bool(forKey: recommendedBootstrapFlagKey),
+               let recommendedRules = try? await fetchRecommendedRepositoryPlugins(excluding: []) {
+                let retainedRules = persistedRules.filter {
+                    !deprecatedDefaultPluginNames.contains($0.name)
+                }
+                let migratedRules = mergePlugins(preferred: recommendedRules, fallback: retainedRules)
+                try savePlugins(migratedRules)
+                setPlugins(migratedRules)
+                UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
+            } else {
+                setPlugins(persistedRules)
+            }
             return
         }
 
@@ -100,7 +114,7 @@ actor PluginManager {
         let recommendedRules = (try? await fetchRecommendedRepositoryPlugins(excluding: [])) ?? []
         if !recommendedRules.isEmpty {
             UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
-            return mergePlugins(preferred: recommendedRules, fallback: bundledRules)
+            return recommendedRules
         }
         return bundledRules
     }
@@ -241,6 +255,10 @@ actor PluginManager {
             capability: plugin.capability,
             fallback: plugin.fallback,
             observability: plugin.observability,
+            searchMode: plugin.searchMode,
+            chapterMode: plugin.chapterMode,
+            searchApiConfig: plugin.searchApiConfig,
+            chapterApiConfig: plugin.chapterApiConfig,
             nativeResolver: plugin.nativeResolver,
             mediaPatterns: plugin.mediaPatterns,
             iframePatterns: plugin.iframePatterns,
@@ -508,6 +526,10 @@ actor PluginManager {
 
     /// Search using a specific plugin
     func searchWithPlugin(plugin: PluginRule, keyword: String) async throws -> [SearchItem] {
+        if plugin.searchMode?.lowercased() == "api", let config = plugin.searchApiConfig {
+            return try await searchWithAPI(plugin: plugin, keyword: keyword, config: config)
+        }
+
         let searchURL = plugin.buildSearchURL(keyword: keyword)
         guard let url = URL(string: searchURL) else {
             throw PluginError.invalidURL(searchURL)
@@ -722,10 +744,266 @@ actor PluginManager {
         return baseURL + "/" + path
     }
 
+    // MARK: - API 8 JSON Rules
+
+    private func searchWithAPI(
+        plugin: PluginRule,
+        keyword: String,
+        config: PluginSearchAPIConfig
+    ) async throws -> [SearchItem] {
+        let substitutions = ["keyword": keyword]
+        let url = try Self.buildAPIURL(request: config.request, substitutions: substitutions)
+        let data = try await APIClient.shared.download(
+            url: url,
+            headers: Self.apiHTTPHeaders(for: plugin)
+        )
+        let root = try JSONSerialization.jsonObject(with: data)
+
+        return Self.jsonPath(config.listPath, in: root).compactMap { item in
+            guard let name = Self.jsonString(
+                Self.jsonPath(config.namePath, in: item).first
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+            let source = Self.jsonString(
+                Self.jsonPath(config.sourcePath, in: item).first
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !name.isEmpty,
+            !source.isEmpty else {
+                return nil
+            }
+
+            return SearchItem(
+                name: name,
+                nameCn: name,
+                src: source,
+                pluginName: plugin.name
+            )
+        }
+    }
+
+    private func chaptersWithAPI(
+        plugin: PluginRule,
+        source: String,
+        config: PluginChapterAPIConfig
+    ) async throws -> [ChapterRoad] {
+        let requestSubstitutions = ["source": source]
+        let url = try Self.buildAPIURL(
+            request: config.request,
+            substitutions: requestSubstitutions
+        )
+        let data = try await APIClient.shared.download(
+            url: url,
+            headers: Self.apiHTTPHeaders(for: plugin)
+        )
+        let root = try JSONSerialization.jsonObject(with: data)
+
+        var substitutions = requestSubstitutions
+        for (name, path) in config.variables ?? [:] {
+            if let value = Self.jsonString(Self.jsonPath(path, in: root).first) {
+                substitutions[name] = value
+            }
+        }
+
+        let roadValues = Self.jsonPath(config.roadsPath, in: root)
+        var roads: [ChapterRoad] = []
+
+        for (roadIndex, roadValue) in roadValues.enumerated() {
+            let rawRoadName = config.roadNamePath.isEmpty
+                ? nil
+                : Self.jsonString(Self.jsonPath(config.roadNamePath, in: roadValue).first)
+            let roadName = rawRoadName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let episodeValues = Self.jsonPath(config.episodesPath, in: roadValue)
+            var episodes: [ChapterRoad.EpisodeItem] = []
+
+            for (episodeIndex, episodeValue) in episodeValues.enumerated() {
+                let rawName = Self.jsonString(
+                    Self.jsonPath(config.episodeNamePath, in: episodeValue).first
+                )?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawEpisodeURL = config.episodeUrlPath.isEmpty
+                    ? String(episodeIndex)
+                    : Self.jsonString(
+                        Self.jsonPath(config.episodeUrlPath, in: episodeValue).first
+                    )
+
+                var episodeSubstitutions = substitutions
+                episodeSubstitutions["roadIndex"] = String(roadIndex)
+                episodeSubstitutions["episodeIndex"] = String(episodeIndex)
+                episodeSubstitutions["episodeUrl"] = rawEpisodeURL ?? String(episodeIndex)
+
+                guard let episodeURL = try? Self.buildAPIURL(
+                    page: config.episodePage,
+                    substitutions: episodeSubstitutions
+                ) else {
+                    continue
+                }
+
+                let episodeNumber = Self.episodeNumber(
+                    name: rawName,
+                    value: rawEpisodeURL,
+                    fallback: episodeIndex + 1
+                )
+                episodes.append(
+                    ChapterRoad.EpisodeItem(
+                        id: "api-\(roadIndex)-\(episodeIndex)",
+                        name: rawName?.isEmpty == false ? rawName! : "第 \(episodeNumber) 集",
+                        src: episodeURL.absoluteString,
+                        episode: episodeNumber
+                    )
+                )
+            }
+
+            if !episodes.isEmpty {
+                roads.append(
+                    ChapterRoad(
+                        id: "api-road-\(roadIndex)",
+                        name: roadName?.isEmpty == false ? roadName! : "播放列表\(roadIndex + 1)",
+                        episodes: episodes
+                    )
+                )
+            }
+        }
+
+        return roads
+    }
+
+    private static func apiHTTPHeaders(for plugin: PluginRule) -> [String: String] {
+        var headers = searchHTTPHeaders(for: plugin)
+        headers["Accept"] = "application/json,text/plain,*/*"
+        headers["Sec-Fetch-Dest"] = "empty"
+        headers["Sec-Fetch-Mode"] = "cors"
+        headers.removeValue(forKey: "Sec-Fetch-User")
+        headers.removeValue(forKey: "Upgrade-Insecure-Requests")
+        return headers
+    }
+
+    private static func buildAPIURL(
+        request: PluginAPIRequest,
+        substitutions: [String: String]
+    ) throws -> URL {
+        guard request.method.uppercased() == "GET" else {
+            throw PluginError.unsupportedAPIRequestMethod(request.method)
+        }
+        return try buildAPIURL(
+            template: request.url,
+            query: request.query,
+            substitutions: substitutions
+        )
+    }
+
+    private static func buildAPIURL(
+        page: PluginEpisodePageConfig,
+        substitutions: [String: String]
+    ) throws -> URL {
+        try buildAPIURL(
+            template: page.url,
+            query: page.query,
+            substitutions: substitutions
+        )
+    }
+
+    private static func buildAPIURL(
+        template: String,
+        query: [String: PluginAPIValue]?,
+        substitutions: [String: String]
+    ) throws -> URL {
+        var resolvedTemplate = template
+        for (name, value) in substitutions {
+            resolvedTemplate = resolvedTemplate.replacingOccurrences(
+                of: "@\(name)",
+                with: encodePathComponent(value)
+            )
+        }
+
+        guard var components = URLComponents(string: resolvedTemplate) else {
+            throw PluginError.invalidURL(resolvedTemplate)
+        }
+        var queryItems = components.queryItems ?? []
+        for (name, value) in (query ?? [:]).sorted(by: { $0.key < $1.key }) {
+            var resolvedValue = value.stringValue
+            for (token, replacement) in substitutions {
+                resolvedValue = resolvedValue.replacingOccurrences(
+                    of: "@\(token)",
+                    with: replacement
+                )
+            }
+            queryItems.append(URLQueryItem(name: name, value: resolvedValue))
+        }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+
+        guard let url = components.url else {
+            throw PluginError.invalidURL(resolvedTemplate)
+        }
+        return url
+    }
+
+    private static func encodePathComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func jsonPath(_ path: String, in root: Any) -> [Any] {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [root] }
+
+        var expression = trimmed
+        if expression == "$" { return [root] }
+        if expression.hasPrefix("$.") {
+            expression.removeFirst(2)
+        } else if expression.hasPrefix("$") {
+            expression.removeFirst()
+        }
+
+        var values: [Any] = [root]
+        for rawSegment in expression.split(separator: ".").map(String.init) {
+            let wildcard = rawSegment.hasSuffix("[*]")
+            let key = wildcard ? String(rawSegment.dropLast(3)) : rawSegment
+            var next: [Any] = []
+
+            for value in values {
+                let selected: Any?
+                if key.isEmpty {
+                    selected = value
+                } else {
+                    selected = (value as? [String: Any])?[key]
+                }
+
+                guard let selected else { continue }
+                if wildcard {
+                    next.append(contentsOf: selected as? [Any] ?? [])
+                } else {
+                    next.append(selected)
+                }
+            }
+            values = next
+        }
+        return values
+    }
+
+    private static func jsonString(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    private static func episodeNumber(name: String?, value: String?, fallback: Int) -> Int {
+        for candidate in [name, value].compactMap({ $0 }) {
+            if let range = candidate.range(of: "\\d+", options: .regularExpression),
+               let number = Int(candidate[range]) {
+                return number
+            }
+        }
+        return fallback
+    }
+
     // MARK: - Chapter/Episode Parsing
 
     /// Get episode list from a bangumi page
     func getChapters(pageURL: String, plugin: PluginRule) async throws -> [ChapterRoad] {
+        if plugin.chapterMode?.lowercased() == "api", let config = plugin.chapterApiConfig {
+            return try await chaptersWithAPI(plugin: plugin, source: pageURL, config: config)
+        }
+
         let api = APIClient.shared
 
         let chapterPageURL = normalizeChapterPageURL(pageURL, plugin: plugin)
@@ -784,14 +1062,74 @@ actor PluginManager {
             }
         }
 
-        if roads.isEmpty, plugin.name.lowercased() == "age" {
-            return parseAGEChapters(doc: doc, plugin: plugin)
+        if roads.isEmpty {
+            let fallbackRoads = parseFallbackChapters(doc: doc, plugin: plugin)
+            if !fallbackRoads.isEmpty {
+                return fallbackRoads
+            }
         }
 
         return roads
     }
 
     // MARK: - Helpers
+
+    /// Recover from brittle positional chapter XPaths after a site moves its
+    /// playlist containers. This only runs when the rule returned no roads and
+    /// limits candidates to common playlist containers plus episode-like URLs.
+    private func parseFallbackChapters(doc: HTMLDocument, plugin: PluginRule) -> [ChapterRoad] {
+        let containerXPath = "//div[contains(@class, 'movurl')]"
+        var roads: [ChapterRoad] = []
+        var seenURLs = Set<String>()
+
+        for (roadIndex, container) in doc.xpath(containerXPath).enumerated() {
+            var episodes: [ChapterRoad.EpisodeItem] = []
+
+            for anchor in container.xpath(".//a") {
+                let src = extractLink(from: anchor)
+                guard isValidPluginPath(src) else { continue }
+
+                let fullURL = buildFullURL(base: plugin.baseURL, path: src)
+                guard isLikelyEpisodeURL(src, fullURL: fullURL, plugin: plugin),
+                      !isPluginRootURL(fullURL, plugin: plugin),
+                      seenURLs.insert(fullURL).inserted else {
+                    continue
+                }
+
+                let rawName = anchor.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let episodeNumber = Self.episodeNumber(
+                    name: rawName,
+                    value: fullURL,
+                    fallback: episodes.count + 1
+                )
+                let name = rawName.isEmpty ? "第 \(episodeNumber) 集" : rawName
+
+                episodes.append(
+                    ChapterRoad.EpisodeItem(
+                        id: "fallback-\(roadIndex)-\(episodeNumber)",
+                        name: name,
+                        src: fullURL,
+                        episode: episodeNumber
+                    )
+                )
+            }
+
+            if !episodes.isEmpty {
+                roads.append(
+                    ChapterRoad(
+                        id: "fallback-road-\(roadIndex)",
+                        name: "播放列表\(roads.count + 1)",
+                        episodes: episodes
+                    )
+                )
+            }
+        }
+
+        if roads.isEmpty, plugin.name.lowercased() == "age" {
+            return parseAGEChapters(doc: doc, plugin: plugin)
+        }
+        return roads
+    }
 
     private func parseAGEChapters(doc: HTMLDocument, plugin: PluginRule) -> [ChapterRoad] {
         var grouped: [Int: [ChapterRoad.EpisodeItem]] = [:]
@@ -984,6 +1322,7 @@ enum PluginError: LocalizedError {
     case invalidURL(String)
     case invalidSharePayload
     case incompatibleAPI(String)
+    case unsupportedAPIRequestMethod(String)
     case repositoryDownloadFailed(String, String)
     case storageUnavailable(String)
     case parsingFailed
@@ -1002,6 +1341,8 @@ enum PluginError: LocalizedError {
             return "Invalid Kazumi rule payload"
         case .incompatibleAPI(let api):
             return "Rule API \(api) is not compatible with this app"
+        case .unsupportedAPIRequestMethod(let method):
+            return "Rule API request method \(method) is not supported"
         case .repositoryDownloadFailed(let fileName, let reason):
             return "Failed to download rule \(fileName): \(reason)"
         case .storageUnavailable(let reason):

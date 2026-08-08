@@ -24,6 +24,9 @@ struct ContentView: View {
         .task {
             await hideStartupSplashAfterDelay()
         }
+        .onOpenURL { url in
+            openTopShelfURL(url)
+        }
     }
 
     private func hideStartupSplashAfterDelay() async {
@@ -37,12 +40,28 @@ struct ContentView: View {
             isShowingStartupSplash = false
         }
     }
+
+    private func openTopShelfURL(_ url: URL) {
+        guard url.scheme == "kazumitv",
+              url.host == "subject",
+              let subjectID = Int(url.pathComponents.dropFirst().first ?? "") else {
+            return
+        }
+
+        Task {
+            guard let bangumi = try? await BangumiAPI.shared.getBangumiInfo(id: subjectID) else {
+                return
+            }
+            Router.shared.popToRoot()
+            Router.shared.navigate(to: .bangumiDetail(bangumi, nil))
+        }
+    }
 }
 
 private struct StartupSplashView: View {
     var body: some View {
         GeometryReader { geometry in
-            Image("LaunchScreenImage")
+            Image("LaunchBrandingV2")
                 .resizable()
                 .scaledToFill()
                 .frame(width: geometry.size.width, height: geometry.size.height)

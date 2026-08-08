@@ -75,6 +75,7 @@ private final class PrivateWebViewResolution: NSObject {
     private let pollIntervalNanoseconds: UInt64 = 900_000_000
 
     private var webView: NSObject?
+    private var hostWindow: UIWindow?
     private var runtimeKind: RuntimeKind?
     private var pollTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
@@ -199,18 +200,27 @@ private final class PrivateWebViewResolution: NSObject {
         guard let view = instance as? UIView,
               let scene = UIApplication.shared.connectedScenes
                 .compactMap({ $0 as? UIWindowScene })
-                .first(where: { $0.activationState == .foregroundActive }),
-              let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first,
-              let rootView = window.rootViewController?.view else {
+                .first(where: { $0.activationState == .foregroundActive }) else {
             return false
         }
 
-        view.frame = rootView.bounds
+        let controller = UIViewController()
+        controller.view.backgroundColor = .clear
+
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue - 1)
+        window.backgroundColor = .clear
+        window.rootViewController = controller
+        window.isUserInteractionEnabled = false
+        window.isHidden = false
+
+        view.frame = controller.view.bounds
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.alpha = 0.01
         view.isUserInteractionEnabled = false
-        rootView.addSubview(view)
-        rootView.sendSubviewToBack(view)
+        controller.view.addSubview(view)
+        hostWindow = window
         return true
     }
 
@@ -324,20 +334,25 @@ private final class PrivateWebViewResolution: NSObject {
         let values = pendingCandidateValues
         pendingCandidateValues.removeAll(keepingCapacity: true)
 
-        let urls = candidateURLs(from: values)
-            .filter { !rejectedCandidateURLs.contains($0.absoluteString) }
-        guard !urls.isEmpty else { return }
+        let candidateURLs = candidateURLs(from: values)
+            .filter { !rejectedCandidateURLs.contains($0.url.absoluteString) }
+        guard !candidateURLs.isEmpty else { return }
 
-        let candidates = urls.map {
+        let candidates = candidateURLs.map {
             PrivateWebViewCandidate(
-                url: $0,
-                headers: playbackHeaders(for: $0, webView: webView)
+                url: $0.url,
+                headers: playbackHeaders(for: $0.url, webView: webView),
+                isPlaylist: $0.isPlaylist
             )
         }
         validationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for candidate in candidates {
-                if await PrivateWebViewMediaProbe.isPlayable(url: candidate.url, headers: candidate.headers) {
+                if await PrivateWebViewMediaProbe.isPlayable(
+                    url: candidate.url,
+                    headers: candidate.headers,
+                    isPlaylist: candidate.isPlaylist
+                ) {
                     let source = VideoSource(
                         url: candidate.url,
                         quality: "本机网页",
@@ -439,27 +454,36 @@ private final class PrivateWebViewResolution: NSObject {
             || host.contains("player")
     }
 
-    private func candidateURLs(from values: [String]) -> [URL] {
+    private func candidateURLs(from values: [String]) -> [PrivateWebViewCandidateURL] {
         var seen = Set<String>()
-        var urls: [URL] = []
+        var urls: [PrivateWebViewCandidateURL] = []
 
         for value in values {
-            for candidate in expandedCandidateValues(value) {
+            let isHLSResponse = value.hasPrefix(Self.hlsResponsePrefix)
+            let rawValue = isHLSResponse
+                ? String(value.dropFirst(Self.hlsResponsePrefix.count))
+                : value
+            for candidate in expandedCandidateValues(rawValue) {
                 guard let url = URL(string: candidate, relativeTo: pageURL)?.absoluteURL,
-                      isDirectMediaURL(url),
+                      isHLSResponse || isDirectMediaURL(url),
                       !seen.contains(url.absoluteString) else {
                     continue
                 }
                 seen.insert(url.absoluteString)
-                urls.append(url)
+                urls.append(
+                    PrivateWebViewCandidateURL(
+                        url: url,
+                        isPlaylist: isHLSResponse || isPlaylistURL(url)
+                    )
+                )
             }
         }
 
         return urls.sorted { lhs, rhs in
-            if isPlaylistURL(lhs) != isPlaylistURL(rhs) {
-                return isPlaylistURL(lhs)
+            if lhs.isPlaylist != rhs.isPlaylist {
+                return lhs.isPlaylist
             }
-            return lhs.absoluteString < rhs.absoluteString
+            return lhs.url.absoluteString < rhs.url.absoluteString
         }
     }
 
@@ -621,12 +645,31 @@ private final class PrivateWebViewResolution: NSObject {
           if (originalFetch) {
             window.fetch = function() {
               post(arguments[0]);
-              return originalFetch.apply(this, arguments);
+              var result = originalFetch.apply(this, arguments);
+              result.then(function(response) {
+                try {
+                  var responseURL = response.url || '';
+                  response.clone().text().then(function(text) {
+                    if (typeof text === 'string' && text.trim().indexOf('#EXTM3U') === 0) {
+                      post('\(Self.hlsResponsePrefix)' + responseURL);
+                    }
+                  }).catch(function() {});
+                } catch (_) {}
+              }).catch(function() {});
+              return result;
             };
           }
           var originalOpen = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function(method, url) {
             post(url);
+            this.addEventListener('load', function() {
+              try {
+                var text = this.responseText;
+                if (typeof text === 'string' && text.trim().indexOf('#EXTM3U') === 0) {
+                  post('\(Self.hlsResponsePrefix)' + (this.responseURL || url));
+                }
+              } catch (_) {}
+            });
             return originalOpen.apply(this, arguments);
           };
           var originalSetAttribute = Element.prototype.setAttribute;
@@ -654,6 +697,8 @@ private final class PrivateWebViewResolution: NSObject {
         })();
         """
     }
+
+    private static let hlsResponsePrefix = "kazumi-hls-response:"
 
     private func extractionScript() -> String {
         """
@@ -754,6 +799,9 @@ private final class PrivateWebViewResolution: NSObject {
             }
         }
         (retiringWebView as? UIView)?.removeFromSuperview()
+        hostWindow?.isHidden = true
+        hostWindow?.rootViewController = nil
+        hostWindow = nil
         webView = nil
         if runtimeKind == .wkWebView, let retiringWebView {
             PrivateWebViewDrainPool.shared.retire(retiringWebView)
@@ -813,9 +861,15 @@ private extension String {
     }
 }
 
+private struct PrivateWebViewCandidateURL {
+    let url: URL
+    let isPlaylist: Bool
+}
+
 private struct PrivateWebViewCandidate {
     let url: URL
     let headers: [String: String]
+    let isPlaylist: Bool
 }
 
 private enum PrivateWebViewMediaProbe {
@@ -828,8 +882,12 @@ private enum PrivateWebViewMediaProbe {
         return URLSession(configuration: configuration)
     }()
 
-    static func isPlayable(url: URL, headers: [String: String]) async -> Bool {
-        if isPlaylistURL(url) {
+    static func isPlayable(
+        url: URL,
+        headers: [String: String],
+        isPlaylist: Bool? = nil
+    ) async -> Bool {
+        if isPlaylist ?? isPlaylistURL(url) {
             return await validatePlaylist(url: url, headers: headers)
         }
         return await validateDirectMedia(url: url, headers: headers)
@@ -846,7 +904,10 @@ private enum PrivateWebViewMediaProbe {
         }
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await TransientNetworkRetry.data(
+                session: session,
+                for: request
+            )
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode),
                   WebChallengeDetector.detect(data: data, response: httpResponse) == nil else {

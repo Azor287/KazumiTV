@@ -42,6 +42,7 @@ actor FavoriteRepository {
             type: type.rawValue
         )
         try await db.insertCollectible(collected)
+        try await syncTopShelf()
     }
 
     func getCollections() async throws -> [CollectedBangumi] {
@@ -64,15 +65,18 @@ actor FavoriteRepository {
 
     func updateCollection(_ collected: CollectedBangumi) async throws {
         try await db.insertCollectible(collected)
+        try await syncTopShelf()
     }
 
     func removeFromCollection(id: String) async throws {
         try await db.deleteCollectible(id: id)
+        try await syncTopShelf()
     }
 
     func removeFromCollection(bangumiId: Int) async throws {
         if let collected = try await db.getCollectible(bangumiId: bangumiId) {
             try await db.deleteCollectible(id: collected.id)
+            try await syncTopShelf()
         }
     }
 
@@ -80,6 +84,11 @@ actor FavoriteRepository {
         guard var collected = try await db.getCollectible(bangumiId: bangumiId) else { return }
         collected.updateProgress(episode: episode, progress: progress)
         try await db.insertCollectible(collected)
+        try await syncTopShelf()
+    }
+
+    private func syncTopShelf() async throws {
+        await TopShelfSyncService.syncFavorites(try await db.getCollectibles())
     }
 }
 

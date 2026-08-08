@@ -85,6 +85,26 @@ struct SourcePlaybackCapability: Equatable, Hashable {
 
 enum SourceCapabilityRegistry {
     private static let builtInCapabilities: [String: SourcePlaybackCapability] = [
+        "tvtfun": SourcePlaybackCapability(
+            mode: .needsJSLite,
+            searchSupported: true,
+            searchWeight: 1.08,
+            stability: 0.90,
+            captchaRisk: .low,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
+        "fcdm": SourcePlaybackCapability(
+            mode: .needsJSLite,
+            searchSupported: true,
+            searchWeight: 0.86,
+            stability: 0.72,
+            captchaRisk: .low,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
         "mxdm": SourcePlaybackCapability(
             mode: .native,
             searchSupported: true,

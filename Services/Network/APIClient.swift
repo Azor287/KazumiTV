@@ -37,7 +37,10 @@ actor APIClient {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await TransientNetworkRetry.data(
+            session: session,
+            for: request
+        )
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -90,7 +93,10 @@ actor APIClient {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await TransientNetworkRetry.data(
+            session: session,
+            for: request
+        )
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -189,7 +195,10 @@ actor APIClient {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await TransientNetworkRetry.data(
+            session: session,
+            for: request
+        )
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -206,6 +215,49 @@ actor APIClient {
 
     func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         return try decoder.decode(type, from: data)
+    }
+}
+
+enum TransientNetworkRetry {
+    static func data(
+        session: URLSession,
+        for request: URLRequest,
+        maxAttempts: Int = 2
+    ) async throws -> (Data, URLResponse) {
+        let attempts = max(1, maxAttempts)
+        var lastError: Error?
+
+        for attempt in 1...attempts {
+            do {
+                return try await session.data(for: request)
+            } catch {
+                lastError = error
+                guard attempt < attempts, shouldRetry(error) else {
+                    throw error
+                }
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 350_000_000)
+            }
+        }
+
+        throw lastError ?? URLError(.unknown)
+    }
+
+    static func shouldRetry(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain,
+              nsError.userInfo[NSURLErrorFailingURLPeerTrustErrorKey] == nil else {
+            return false
+        }
+
+        let code = URLError.Code(rawValue: nsError.code)
+        return [
+            .timedOut,
+            .cannotFindHost,
+            .cannotConnectToHost,
+            .networkConnectionLost,
+            .dnsLookupFailed,
+            .secureConnectionFailed,
+        ].contains(code)
     }
 }
 

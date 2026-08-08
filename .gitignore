@@ -10,7 +10,7 @@ DerivedData/
 *.dSYM/
 *.dSYM.zip
 *.ipa
-artifacts/*.tar.gz
+artifacts/
 *.hmap
 *.moved-aside
 *.xccheckout
