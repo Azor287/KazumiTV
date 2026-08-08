@@ -7,6 +7,80 @@
 
 import Foundation
 
+enum PluginAPIValue: Codable, Equatable, Hashable {
+    case string(String)
+    case integer(Int)
+    case double(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else {
+            self = .string(try container.decode(String.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .double(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+
+    var stringValue: String {
+        switch self {
+        case .string(let value): return value
+        case .integer(let value): return String(value)
+        case .double(let value): return String(value)
+        case .bool(let value): return value ? "true" : "false"
+        case .null: return ""
+        }
+    }
+}
+
+struct PluginAPIRequest: Codable, Equatable, Hashable {
+    let method: String
+    let url: String
+    let query: [String: PluginAPIValue]?
+}
+
+struct PluginSearchAPIConfig: Codable, Equatable, Hashable {
+    let request: PluginAPIRequest
+    let listPath: String
+    let namePath: String
+    let sourcePath: String
+}
+
+struct PluginEpisodePageConfig: Codable, Equatable, Hashable {
+    let url: String
+    let query: [String: PluginAPIValue]?
+}
+
+struct PluginChapterAPIConfig: Codable, Equatable, Hashable {
+    let request: PluginAPIRequest
+    let format: String?
+    let roadsPath: String
+    let roadNamePath: String
+    let episodesPath: String
+    let episodeNamePath: String
+    let episodeUrlPath: String
+    let variables: [String: String]?
+    let episodePage: PluginEpisodePageConfig
+}
+
 struct PluginRule: Codable, Identifiable, Equatable, Hashable {
     let api: String
     let type: String
@@ -32,6 +106,10 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
     let capability: PluginCapability?
     let fallback: PluginFallbackCapability?
     let observability: PluginObservability?
+    var searchMode: String? = nil
+    var chapterMode: String? = nil
+    var searchApiConfig: PluginSearchAPIConfig? = nil
+    var chapterApiConfig: PluginChapterAPIConfig? = nil
     var nativeResolver: String? = nil
     var mediaPatterns: [String]? = nil
     var iframePatterns: [String]? = nil
@@ -45,6 +123,7 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
         case userAgent, baseURL, searchURL, searchList, searchName, searchResult
         case chapterRoads, chapterResult, referer, adBlocker, antiCrawlerConfig
         case sourceSearch = "search", capability, fallback, observability
+        case searchMode, chapterMode, searchApiConfig, chapterApiConfig
         case nativeResolver, mediaPatterns, iframePatterns, playbackHeaders
     }
 
