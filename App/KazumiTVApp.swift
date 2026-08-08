@@ -24,6 +24,9 @@ struct KazumiTVApp: App {
     private func initializeStorage() async {
         do {
             try await DatabaseManager.shared.setup()
+            async let localSync: Void = TopShelfSyncService.syncAll()
+            async let remoteSync: Void = TopShelfRemoteSyncService.syncAll()
+            _ = await (localSync, remoteSync)
         } catch {
             print("KazumiTVApp: failed to initialize local storage: \(error.localizedDescription)")
         }

@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var danmakuScroll: Bool = SettingsRepository.shared.danmakuScroll
     @State private var danmakuBottom: Bool = SettingsRepository.shared.danmakuBottom
     @State private var privateMode: Bool = SettingsRepository.shared.privateMode
+    @State private var topShelfSource: TopShelfSource = SettingsRepository.shared.topShelfSource
 
     @State private var isClearingHistory = false
     @State private var noticeText: String?
@@ -40,6 +41,7 @@ struct SettingsView: View {
                 localResolverSection
                 playbackSection
                 danmakuSection
+                topShelfSection
                 dataSection
                 aboutSection
             }
@@ -282,6 +284,39 @@ struct SettingsView: View {
             ) {
                 showResetConfirmation = true
             }
+        }
+    }
+
+    private var topShelfSection: some View {
+        settingsSection(title: "Apple TV 桌面", subtitle: "选择聚焦 KazumiTV 图标时顶部轮播的内容") {
+            Menu {
+                ForEach(TopShelfSource.allCases) { source in
+                    Button {
+                        topShelfSource = source
+                        SettingsRepository.shared.topShelfSource = source
+                        showNotice("顶部轮播已切换为\(source.title)")
+                    } label: {
+                        Label(source.title, systemImage: source == topShelfSource ? "checkmark" : sourceIcon(source))
+                    }
+                }
+            } label: {
+                settingsRowContent(
+                    title: "顶部轮播内容",
+                    subtitle: topShelfSource.subtitle,
+                    icon: "rectangle.stack"
+                ) {
+                    HStack(spacing: 10) {
+                        Text(topShelfSource.title)
+                            .font(.headline.weight(.bold))
+                            .foregroundColor(.kzText)
+
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(.kzTextSecondary)
+                    }
+                }
+            }
+            .buttonStyle(SettingsRowButtonStyle())
         }
     }
 
@@ -562,6 +597,16 @@ struct SettingsView: View {
         danmakuScroll = SettingsRepository.shared.danmakuScroll
         danmakuBottom = SettingsRepository.shared.danmakuBottom
         privateMode = SettingsRepository.shared.privateMode
+        topShelfSource = SettingsRepository.shared.topShelfSource
+    }
+
+    private func sourceIcon(_ source: TopShelfSource) -> String {
+        switch source {
+        case .seasonal: return "sparkles.tv"
+        case .recentUpdates: return "clock.arrow.circlepath"
+        case .favorites: return "heart"
+        case .history: return "play.rectangle.on.rectangle"
+        }
     }
 
     private func showNotice(_ text: String) {

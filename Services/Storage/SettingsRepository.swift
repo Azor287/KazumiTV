@@ -58,6 +58,9 @@ final class SettingsRepository {
 
         // Private
         case privateMode = "privateMode"
+
+        // Top Shelf
+        case topShelfSource = "topShelfSource"
     }
 
     // MARK: - Generic Accessors
@@ -223,6 +226,11 @@ final class SettingsRepository {
         set { setBool(.privateWebResolverEnable, newValue) }
     }
 
+    var topShelfSource: TopShelfSource {
+        get { TopShelfSharedStore.source }
+        set { TopShelfSharedStore.source = newValue }
+    }
+
     // MARK: - Reset
 
     func resetToDefaults() {
@@ -247,9 +255,11 @@ final class SettingsRepository {
             .downloadParallelSegments,
             .downloadDanmaku,
             .privateMode,
-            .privateWebResolverEnable
+            .privateWebResolverEnable,
+            .topShelfSource
         ] {
             remove(key)
         }
+        topShelfSource = .recentUpdates
     }
 }

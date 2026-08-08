@@ -27,8 +27,11 @@ struct HomeView: View {
                 ScrollViewReader { scrollProxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
-                            headerView
+                            Color.clear
+                                .frame(height: 0)
                                 .id(HomeScrollTarget.top)
+
+                            headerView
 
                             if viewModel.isLoading || (viewModel.isLoadingTrends && viewModel.trends.isEmpty) {
                                 ProgressView()

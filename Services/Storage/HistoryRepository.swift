@@ -48,6 +48,7 @@ actor HistoryRepository {
             sourceName: sourceName
         )
         try await db.insertHistory(history)
+        try await syncTopShelf()
         await notifyHistoryDidChange()
     }
 
@@ -57,11 +58,13 @@ actor HistoryRepository {
 
     func deleteHistory(id: String) async throws {
         try await db.deleteHistory(id: id)
+        try await syncTopShelf()
         await notifyHistoryDidChange()
     }
 
     func clearAllHistory() async throws {
         try await db.clearHistories()
+        try await syncTopShelf()
         await notifyHistoryDidChange()
     }
 
@@ -84,6 +87,10 @@ actor HistoryRepository {
 
     private func historyID(bangumiId: Int) -> String {
         "history|\(bangumiId)"
+    }
+
+    private func syncTopShelf() async throws {
+        await TopShelfSyncService.syncHistory(try await db.getHistories(limit: 20))
     }
 
     private func notifyHistoryDidChange() async {
