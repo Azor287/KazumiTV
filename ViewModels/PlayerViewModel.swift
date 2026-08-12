@@ -22,7 +22,7 @@ class PlayerViewModel: ObservableObject {
     // Danmaku
     @Published var danmakuEnabled = true
     @Published var danmakuOpacity: Double = 1.0
-    @Published var danmakuFontSize: CGFloat = 18
+    @Published var danmakuFontSize: CGFloat = 24
     @Published var danmakuShowTop = true
     @Published var danmakuShowScroll = true
     @Published var danmakuShowBottom = true
@@ -170,7 +170,7 @@ class PlayerViewModel: ObservableObject {
                 + "\(URLLogSanitizer.redacted(pageURL)), pluginName: \(pluginName ?? "nil")"
         )
 
-        // 优先使用 tvOS 原生解析；外部解析服务只作为显式后备。
+        // 优先使用端侧静态解析；本机动态网页解析只作为显式后备。
         do {
             let resolver = VideoSourceResolver.shared
             print("PlayerViewModel.resolveWithPageURL: 获取 VideoSourceResolver")

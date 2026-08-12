@@ -48,7 +48,7 @@ class HomeViewModel: ObservableObject {
 
     // MARK: - Pagination
     private var currentOffset = 0
-    private let pageSize = 20
+    private let pageSize = 24
     private var hasMore = true
 
     // MARK: - Services
@@ -184,6 +184,6 @@ class HomeViewModel: ObservableObject {
             return try await bangumiAPI.getTaggedBangumis(tag: tag, limit: limit, offset: offset)
         }
 
-        return try await bangumiAPI.getPopularBangumis(limit: limit, offset: offset)
+        return try await bangumiAPI.getTrends(limit: limit, offset: offset)
     }
 }

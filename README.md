@@ -52,6 +52,24 @@ xcodebuild -project KazumiTV.xcodeproj \
   build
 ```
 
+## Release 与 tvOS 侧载
+
+生成 Release 归档：
+
+```bash
+xcodegen generate
+xcodebuild archive \
+  -project KazumiTV.xcodeproj \
+  -scheme KazumiTV \
+  -configuration Release \
+  -destination 'generic/platform=tvOS' \
+  -archivePath build/KazumiTV.xcarchive
+```
+
+侧载 IPA 必须使用 Apple Developer tvOS 证书和 Provisioning Profile 签名，主 App `com.kazumi.tv` 与 Top Shelf 扩展 `com.kazumi.tv.topshelf` 都需要包含在签名配置中。可以在 Xcode Organizer 中从归档选择 **Distribute App** 导出 Development/Ad Hoc IPA，或使用 `xcodebuild -exportArchive` 导出。
+
+如果本机没有匹配的 tvOS Provisioning Profile，可以关闭代码签名生成 `build/KazumiTV-0.2.0-unsigned.ipa` 作为后续重签输入；该未签名包不能直接安装到 Apple TV。发布到 Release 前请确认 IPA 已签名，并在目标 Apple TV 上完成对应的开发者信任或侧载工具配置。
+
 ## 弹幕 API 配置
 
 KazumiTV 按原版 Kazumi 的方式调用 DanDanPlay API。DanDanPlay 请求需要应用 ID 与密钥签名；源码构建时，请在本地配置自己的 DanDanPlay Open API 凭据。
@@ -98,9 +116,9 @@ xcodebuild -project KazumiTV.xcodeproj \
 
 ## 规则源
 
-首次安装会优先尝试从 [KazumiRules](https://github.com/Predidit/KazumiRules) 获取推荐原生播放规则，并以内置 AGE、DM84、aafun 作为离线兜底。已有安装不会在播放时自动联网更新规则；可以在“规则管理”里使用“安装推荐”补齐 MXdm、omofun03、xfdmneo、7sefun、gugu3 等规则，或使用“规则仓库”手动安装更多规则。
+首次安装会优先尝试从 [KazumiRules](https://github.com/Predidit/KazumiRules) 获取端侧推荐规则 `TvTFun`、`xfdmneo`，并以内置 AGE、DM84、aafun 作为离线兜底。`TvTFun` 是本项目通过本机 API 8 解析保留的兼容规则，属于弃用标记的本地兼容例外；其他被规则仓库标记为验证码或弃用的规则不会自动推荐。已有安装不会在播放时自动联网更新规则；可以在“规则管理”里使用“安装推荐”或“规则仓库”手动安装其他端侧规则。
 
-默认播放源排序会优先使用近期开播成功的来源；没有历史记录时，MXdm 等无反爬原生播放源会排在 AGE/aafun 这类更容易遇到 CDN 地区限制的来源前面。
+默认播放源排序会优先使用近期开播成功的来源；没有历史记录时，会优先选择标记为本地、且不需要验证的来源。
 
 ## 与 Kazumi 的关系
 
