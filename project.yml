@@ -8,8 +8,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "16"
+    MARKETING_VERSION: "0.2.1"
+    CURRENT_PROJECT_VERSION: "17"
     SWIFT_VERSION: "5.9"
     TVOS_DEPLOYMENT_TARGET: "17.0"
 
@@ -72,8 +72,8 @@ targets:
         CFBundleDisplayName: KazumiTV
         CFBundleName: KazumiTV
         CFBundleIdentifier: com.kazumi.tv
-        CFBundleVersion: "16"
-        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "17"
+        CFBundleShortVersionString: "0.2.1"
         DANDANPLAY_APP_ID: "$(DANDANPLAY_APP_ID)"
         DANDANPLAY_APP_SECRET: "$(DANDANPLAY_APP_SECRET)"
         NSAppTransportSecurity:
@@ -121,8 +121,8 @@ targets:
         CFBundleDisplayName: KazumiTV Top Shelf
         CFBundleName: KazumiTVTopShelf
         CFBundleIdentifier: com.kazumi.tv.topshelf
-        CFBundleVersion: "16"
-        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "17"
+        CFBundleShortVersionString: "0.2.1"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.tv-top-shelf
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ContentProvider"
