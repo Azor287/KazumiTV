@@ -416,7 +416,7 @@ struct DanmakuToggleButton: View {
             isPlaying: true,
             isEnabled: true,
             playbackRate: 1.0,
-            fontSize: 18,
+            fontSize: 24,
             opacity: 1.0,
             showTop: true,
             showScroll: true,

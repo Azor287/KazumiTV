@@ -11,8 +11,24 @@ final class SettingsRepository {
     static let shared = SettingsRepository()
 
     private let defaults = UserDefaults.standard
+    private static let defaultDanmakuFontSize = 24.0
+    private static let legacyDanmakuFontSize = 18.0
+    private static let danmakuFontSizeMigrationKey = "danmakuFontSizeDefaultMigration_v2"
 
-    private init() {}
+    private init() {
+        migrateDanmakuFontSizeDefault()
+    }
+
+    private func migrateDanmakuFontSizeDefault() {
+        guard !defaults.bool(forKey: Self.danmakuFontSizeMigrationKey) else { return }
+
+        if let storedValue = defaults.object(forKey: SettingKey.danmakuFontSize.rawValue) as? NSNumber,
+           storedValue.doubleValue == Self.legacyDanmakuFontSize {
+            defaults.set(Self.defaultDanmakuFontSize, forKey: SettingKey.danmakuFontSize.rawValue)
+        }
+
+        defaults.set(true, forKey: Self.danmakuFontSizeMigrationKey)
+    }
 
     // MARK: - Setting Keys
     enum SettingKey: String {
@@ -156,7 +172,7 @@ final class SettingsRepository {
     }
 
     var danmakuFontSize: Double {
-        get { getDouble(.danmakuFontSize, defaultValue: 18.0) }
+        get { getDouble(.danmakuFontSize, defaultValue: Self.defaultDanmakuFontSize) }
         set { setDouble(.danmakuFontSize, newValue) }
     }
 

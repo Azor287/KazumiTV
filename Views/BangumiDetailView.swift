@@ -1209,7 +1209,7 @@ private struct SourceSelectionSheet: View {
                     )
                 case .captcha:
                     emptyState(
-                        "\(tab.plugin.name) 需要验证码验证",
+                        "\(tab.plugin.name) 需要验证",
                         primaryTitle: "别名检索",
                         secondaryTitle: "手动检索",
                         primaryAction: { searchAliasForPlugin(tab.plugin.name) },
@@ -1321,7 +1321,7 @@ private struct SourceSelectionSheet: View {
                 Spacer(minLength: 16)
 
                 if let badgeTitle = SourcePlaybackPreferenceStore.shared.capabilityBadgeTitle(source.pluginName) {
-                    nativePlaybackBadge(title: badgeTitle == "本机" ? "本机播放" : badgeTitle)
+                    nativePlaybackBadge(title: badgeTitle == "本地" ? "本地播放" : badgeTitle)
                 }
 
                 if loadingSourceKey == sourceID {
@@ -2753,13 +2753,13 @@ class BangumiDetailViewModel: ObservableObject {
             case .webChallenge(let signal):
                 return sourceSearchChallengeStatus(signal: signal, pluginName: plugin.name)
             case .emptyHTML where plugin.playbackCapability.requiresBrowserRuntime:
-                return .blocked("\(plugin.name) 需要真实浏览器环境，当前无外部解析模式不支持。")
+                return .blocked("\(plugin.name) 需要本机动态网页解析，当前搜索模式无法处理。")
             default:
                 break
             }
         }
 
-        if plugin.antiCrawlerConfig != nil {
+        if plugin.isAntiCrawlerEnabled {
             return .captcha
         }
 

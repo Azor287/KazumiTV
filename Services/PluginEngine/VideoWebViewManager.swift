@@ -2,8 +2,9 @@
 //  VideoWebViewManager.swift
 //  KazumiTV
 //
-//  Video URL Extraction - simplified for tvOS (no WebView support)
-//  tvOS does not support WKWebView, so we use direct HTTP parsing
+//  Legacy direct HTTP video URL extraction.
+//  The primary playback path now uses NativeVideoResolver and the local
+//  private WebKit runtime when a dynamic page is required.
 //
 
 import Foundation
@@ -41,7 +42,8 @@ actor VideoWebViewManager {
             return URL(string: m3u8URL)!
         }
 
-        // If direct extraction fails and plugin requires webview, throw error
+        // If direct extraction fails and the rule allows dynamic page parsing,
+        // let the primary resolver handle the local WebKit fallback.
         if plugin.useWebview {
             throw VideoSourceError.webViewRequired
         }
@@ -111,8 +113,8 @@ actor VideoWebViewManager {
 
     // MARK: - Preflight Check
 
-    /// Check if a plugin can be used on tvOS
-    /// Returns true if the plugin doesn't require webview
+    /// Check whether this legacy direct parser can handle the rule without a
+    /// dynamic page runtime.
     func isPluginCompatible(_ plugin: PluginRule) -> Bool {
         return !plugin.useWebview
     }

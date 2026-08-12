@@ -114,11 +114,18 @@ struct PluginRule: Codable, Identifiable, Equatable, Hashable {
     var mediaPatterns: [String]? = nil
     var iframePatterns: [String]? = nil
     var playbackHeaders: [String: String]? = nil
+    var deprecated: Bool? = nil
 
     var id: String { name }
 
+    /// Whether the rule explicitly declares that its upstream source is protected by anti-crawler logic.
+    /// Older rules did not have an `enabled` field, so a present config is treated conservatively as enabled.
+    var isAntiCrawlerEnabled: Bool {
+        antiCrawlerConfig?.isEnabled ?? false
+    }
+
     enum CodingKeys: String, CodingKey {
-        case api, type, name, version, muliSources, useWebview, useNativePlayer
+        case api, type, name, version, deprecated, muliSources, useWebview, useNativePlayer
         case usePost, useLegacyParser
         case userAgent, baseURL, searchURL, searchList, searchName, searchResult
         case chapterRoads, chapterResult, referer, adBlocker, antiCrawlerConfig
@@ -194,11 +201,12 @@ struct PluginRepositoryItem: Decodable, Identifiable, Hashable {
     let author: String
     let lastUpdate: Int
     let antiCrawlerEnabled: Bool
+    let deprecated: Bool?
 
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, version, useNativePlayer, author, lastUpdate
+        case name, version, useNativePlayer, author, lastUpdate, deprecated
         case antiCrawlerEnabled, antiCrawlerConfig
     }
 
@@ -208,7 +216,8 @@ struct PluginRepositoryItem: Decodable, Identifiable, Hashable {
         useNativePlayer: Bool,
         author: String,
         lastUpdate: Int,
-        antiCrawlerEnabled: Bool
+        antiCrawlerEnabled: Bool,
+        deprecated: Bool? = nil
     ) {
         self.name = name
         self.version = version
@@ -216,6 +225,7 @@ struct PluginRepositoryItem: Decodable, Identifiable, Hashable {
         self.author = author
         self.lastUpdate = lastUpdate
         self.antiCrawlerEnabled = antiCrawlerEnabled
+        self.deprecated = deprecated
     }
 
     init(from decoder: Decoder) throws {
@@ -225,25 +235,31 @@ struct PluginRepositoryItem: Decodable, Identifiable, Hashable {
         useNativePlayer = try container.decode(Bool.self, forKey: .useNativePlayer)
         author = try container.decodeIfPresent(String.self, forKey: .author) ?? ""
         lastUpdate = try container.decodeIfPresent(Int.self, forKey: .lastUpdate) ?? 0
+        deprecated = try container.decodeIfPresent(Bool.self, forKey: .deprecated)
 
         if let direct = try container.decodeIfPresent(Bool.self, forKey: .antiCrawlerEnabled) {
             antiCrawlerEnabled = direct
         } else if let config = try container.decodeIfPresent(RepositoryAntiCrawlerConfig.self, forKey: .antiCrawlerConfig) {
-            antiCrawlerEnabled = config.enabled
+            antiCrawlerEnabled = config.enabled ?? true
         } else {
             antiCrawlerEnabled = false
         }
     }
 
     private struct RepositoryAntiCrawlerConfig: Codable {
-        let enabled: Bool
+        let enabled: Bool?
     }
 }
 
 struct AntiCrawlerConfig: Codable, Equatable, Hashable {
+    let enabled: Bool? = nil
     let type: String?
     let delay: Int?
     let maxRetries: Int?
+
+    var isEnabled: Bool {
+        enabled ?? true
+    }
 }
 
 // MARK: - Chapter/Episode Road

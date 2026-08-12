@@ -77,8 +77,7 @@ struct SourcePlaybackCapability: Equatable, Hashable {
     }
 
     var badgeTitle: String? {
-        if supportsLocalPlayback { return "本机" }
-        if requiresBrowserRuntime { return "本机网页" }
+        if supportsLocalPlayback || requiresBrowserRuntime { return "本地" }
         return nil
     }
 }
@@ -153,7 +152,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "omofun03": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -163,7 +162,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "enlie": SourcePlaybackCapability(
             mode: .unknown,
@@ -173,7 +172,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .medium,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "7sefun": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -183,7 +182,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "yishijie": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -193,7 +192,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "age": SourcePlaybackCapability(
             mode: .needsJSLite,
@@ -203,7 +202,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .medium,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "dm84": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -213,7 +212,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "mwcy": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -223,7 +222,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "lmm": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -233,7 +232,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "xfdm": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -243,17 +242,57 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "xfdmneo": SourcePlaybackCapability(
-            mode: .unknown,
+            mode: .needsJSLite,
             searchSupported: true,
-            searchWeight: 0.34,
+            searchWeight: 0.86,
+            stability: 0.78,
+            captchaRisk: .medium,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
+        "dalvdm": SourcePlaybackCapability(
+            mode: .needsBrowser,
+            searchSupported: true,
+            searchWeight: 0.22,
+            stability: 0.20,
+            captchaRisk: .high,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
+        "mgnacg": SourcePlaybackCapability(
+            mode: .needsBrowser,
+            searchSupported: true,
+            searchWeight: 0.22,
+            stability: 0.20,
+            captchaRisk: .high,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
+        "mutefun": SourcePlaybackCapability(
+            mode: .needsBrowser,
+            searchSupported: true,
+            searchWeight: 0.22,
+            stability: 0.20,
+            captchaRisk: .high,
+            loginRequired: false,
+            sessionImportSupported: false,
+            allowExternalResolver: false
+        ),
+        "sorani": SourcePlaybackCapability(
+            mode: .needsJSLite,
+            searchSupported: true,
+            searchWeight: 0.48,
             stability: 0.30,
             captchaRisk: .medium,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         ),
         "girigirilove": SourcePlaybackCapability(
             mode: .needsBrowser,
@@ -263,7 +302,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .high,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         )
     ]
 
@@ -276,7 +315,8 @@ enum SourceCapabilityRegistry {
             ?? (declared?.needsJS == true ? .needsJSLite : nil)
             ?? builtIn.mode
 
-        let captchaRisk = declared?.captchaRisk ?? (plugin.antiCrawlerConfig == nil ? builtIn.captchaRisk : .high)
+        let captchaRisk = declared?.captchaRisk
+            ?? (plugin.antiCrawlerConfig?.isEnabled == true ? .high : builtIn.captchaRisk)
 
         return SourcePlaybackCapability(
             mode: mode,
@@ -286,7 +326,8 @@ enum SourceCapabilityRegistry {
             captchaRisk: captchaRisk,
             loginRequired: declared?.loginRequired ?? builtIn.loginRequired,
             sessionImportSupported: declared?.sessionImportSupported ?? builtIn.sessionImportSupported,
-            allowExternalResolver: plugin.fallback?.allowExternalResolver ?? builtIn.allowExternalResolver
+            // The Python/Playwright resolver was removed; all playback paths stay on-device.
+            allowExternalResolver: false
         )
     }
 
@@ -299,7 +340,7 @@ enum SourceCapabilityRegistry {
             captchaRisk: .unknown,
             loginRequired: false,
             sessionImportSupported: false,
-            allowExternalResolver: true
+            allowExternalResolver: false
         )
     }
 

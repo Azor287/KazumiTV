@@ -181,7 +181,7 @@ struct PluginRulesView: View {
                     .font(.title2.weight(.semibold))
                     .foregroundColor(.kzText)
 
-                Text("\(rules.count)")
+                Text("\(displayableRules.count)")
                     .font(.headline.weight(.bold))
                     .foregroundColor(.kzOnPrimaryContainer)
                     .padding(.horizontal, 12)
@@ -196,7 +196,7 @@ struct PluginRulesView: View {
                 }
             }
 
-            if rules.isEmpty {
+            if displayableRules.isEmpty {
                 Text("暂无规则，可以从规则仓库导入或新建规则。")
                     .font(.headline)
                     .foregroundColor(.kzTextSecondary)
@@ -206,11 +206,11 @@ struct PluginRulesView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 LazyVStack(spacing: 12) {
-                    ForEach(Array(rules.enumerated()), id: \.element.name) { index, rule in
+                    ForEach(Array(displayableRules.enumerated()), id: \.element.name) { index, rule in
                         PluginRuleRow(
                             rule: rule,
                             index: index,
-                            count: rules.count,
+                            count: displayableRules.count,
                             isTesting: testingRuleName == rule.name,
                             update: { Task { await updateRule(rule) } },
                             edit: { editorContext = RuleEditorContext(rule: rule) },
@@ -249,8 +249,8 @@ struct PluginRulesView: View {
                     ProgressView()
                         .tint(.kzPrimary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if repositoryItems.isEmpty {
-                    Text("暂无仓库数据，检查网络后刷新。")
+                } else if sortedRepositoryItems.isEmpty {
+                    Text("暂无可用规则，检查网络后刷新。")
                         .font(.headline)
                         .foregroundColor(.kzTextSecondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -309,10 +309,15 @@ struct PluginRulesView: View {
     }
 
     private var sortedRepositoryItems: [PluginRepositoryItem] {
+        let displayableItems = repositoryItems.filter { $0.deprecated != true }
         if repositorySortByName {
-            return repositoryItems.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return displayableItems.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
-        return repositoryItems.sorted { $0.lastUpdate > $1.lastUpdate }
+        return displayableItems.sorted { $0.lastUpdate > $1.lastUpdate }
+    }
+
+    private var displayableRules: [PluginRule] {
+        rules.filter { $0.deprecated != true }
     }
 
     private func toolbarButton(title: String, icon: String, isBusy: Bool = false, action: @escaping () -> Void) -> some View {
@@ -547,7 +552,10 @@ private struct PluginRuleRow: View {
                             .foregroundColor(.kzText)
 
                         tag("v\(rule.version)")
-                        tag(rule.useWebview ? "webview" : "direct")
+                        tag(rule.playbackCapability.badgeTitle ?? (rule.useNativePlayer ? "本地" : "不可用"))
+                        if rule.isAntiCrawlerEnabled {
+                            tag("需验证")
+                        }
                         if rule.adBlocker == true {
                             tag("adblock")
                         }
@@ -642,13 +650,11 @@ private struct RepositoryRuleRow: View {
                         .padding(.vertical, 4)
                         .background(Color.kzPrimaryContainer.opacity(0.78), in: Capsule())
 
+                    if item.useNativePlayer {
+                        tag("本地")
+                    }
                     if item.antiCrawlerEnabled {
-                        Text("captcha")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(.kzText)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 4)
-                            .background(Color.kzSurfaceContainer, in: Capsule())
+                        tag("需验证")
                     }
                 }
 
@@ -672,6 +678,15 @@ private struct RepositoryRuleRow: View {
         .padding(16)
         .background(Color.kzSurface)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func tag(_ value: String) -> some View {
+        Text(value)
+            .font(.caption.weight(.bold))
+            .foregroundColor(.kzText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Color.kzSurfaceContainer, in: Capsule())
     }
 }
 
@@ -846,7 +861,8 @@ private struct PluginRuleEditorView: View {
             nativeResolver: rule.nativeResolver,
             mediaPatterns: rule.mediaPatterns,
             iframePatterns: rule.iframePatterns,
-            playbackHeaders: rule.playbackHeaders
+            playbackHeaders: rule.playbackHeaders,
+            deprecated: rule.deprecated
         )
     }
 }

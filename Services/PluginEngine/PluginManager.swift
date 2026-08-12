@@ -27,20 +27,15 @@ actor PluginManager {
         "TvTFun",
         "xfdmneo",
     ]
-    private let deprecatedDefaultPluginNames: Set<String> = [
-        "MXdm",
+    private let deprecatedRuleNames: Set<String> = [
         "omofun03",
-        "baimao",
         "enlie",
         "gpjda",
-        "aafun",
-        "mwcy",
-        "gugu3",
-        "7sefun",
         "yishijie",
-        "DM84",
-        "AGE",
     ]
+    // TvTFun remains a locally validated,端侧-compatible recommendation even while the
+    // upstream index temporarily carries a deprecated marker for its JSON file.
+    private let locallySupportedDeprecatedPluginNames: Set<String> = ["tvtfun"]
     private let recommendedBootstrapFlagKey = "kazumi.pluginRepositoryRecommendedBootstrapped.v2"
     private let maxSupportedAPILevel = 8
     private let pluginsFileName = "plugins.json"
@@ -65,17 +60,24 @@ actor PluginManager {
 
         let persistedRules = try loadPersistedPlugins()
         if !persistedRules.isEmpty {
+            let retainedRules = persistedRules.filter { !shouldRemoveDuringMigration($0) }
+            let removedDeprecatedRules = retainedRules.count != persistedRules.count
+
             if !UserDefaults.standard.bool(forKey: recommendedBootstrapFlagKey),
                let recommendedRules = try? await fetchRecommendedRepositoryPlugins(excluding: []) {
-                let retainedRules = persistedRules.filter {
-                    !deprecatedDefaultPluginNames.contains($0.name)
-                }
                 let migratedRules = mergePlugins(preferred: recommendedRules, fallback: retainedRules)
                 try savePlugins(migratedRules)
                 setPlugins(migratedRules)
                 UserDefaults.standard.set(true, forKey: recommendedBootstrapFlagKey)
+            } else if retainedRules.isEmpty {
+                let defaultRules = try await loadDefaultPlugins()
+                try savePlugins(defaultRules)
+                setPlugins(defaultRules)
             } else {
-                setPlugins(persistedRules)
+                if removedDeprecatedRules {
+                    try savePlugins(retainedRules)
+                }
+                setPlugins(retainedRules)
             }
             return
         }
@@ -128,10 +130,15 @@ actor PluginManager {
         )
 
         var rules: [PluginRule] = []
-        for name in recommendedRepositoryPluginNames where !installedNames.contains(name) && recommendedAvailableNames.contains(name) {
+        for name in recommendedRepositoryPluginNames where !installedNames.contains(name) {
+            let isLocalCompatibilityOverride = locallySupportedDeprecatedPluginNames.contains(normalizedPluginName(name))
+            guard recommendedAvailableNames.contains(name) || isLocalCompatibilityOverride else {
+                continue
+            }
+
             do {
                 let plugin = try await fetchRepositoryPlugin(name: name)
-                guard plugin.useNativePlayer else { continue }
+                guard plugin.useNativePlayer, !plugin.isAntiCrawlerEnabled else { continue }
                 rules.append(plugin)
             } catch {
                 print("PluginManager: 推荐规则 \(name) 下载失败: \(error.localizedDescription)")
@@ -262,8 +269,29 @@ actor PluginManager {
             nativeResolver: plugin.nativeResolver,
             mediaPatterns: plugin.mediaPatterns,
             iframePatterns: plugin.iframePatterns,
-            playbackHeaders: plugin.playbackHeaders
+            playbackHeaders: plugin.playbackHeaders,
+            deprecated: plugin.deprecated
         )
+    }
+
+    private func normalizedPluginName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func isLocallySupportedDeprecated(_ plugin: PluginRule) -> Bool {
+        locallySupportedDeprecatedPluginNames.contains(normalizedPluginName(plugin.name))
+    }
+
+    private func shouldRejectDeprecated(_ plugin: PluginRule) -> Bool {
+        plugin.deprecated == true && !isLocallySupportedDeprecated(plugin)
+    }
+
+    private func shouldRemoveDuringMigration(_ plugin: PluginRule) -> Bool {
+        let normalizedName = normalizedPluginName(plugin.name)
+        if locallySupportedDeprecatedPluginNames.contains(normalizedName) {
+            return false
+        }
+        return deprecatedRuleNames.contains(normalizedName) || plugin.deprecated == true
     }
 
     private func bundledPluginURLs() -> [URL] {
@@ -302,6 +330,10 @@ actor PluginManager {
     // MARK: - Manage Plugins
 
     func upsertPlugin(_ plugin: PluginRule) async throws {
+        guard !shouldRejectDeprecated(plugin) else {
+            throw PluginError.deprecatedRule(plugin.name)
+        }
+
         if let index = plugins.firstIndex(where: { $0.name == plugin.name }) {
             plugins[index] = plugin
         } else {
@@ -342,6 +374,9 @@ actor PluginManager {
 
     func importSharedPlugin(_ value: String) async throws -> PluginRule {
         let plugin = try PluginRule.decodeShareURL(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !shouldRejectDeprecated(plugin) else {
+            throw PluginError.deprecatedRule(plugin.name)
+        }
         try await upsertPlugin(plugin)
         return plugin
     }
@@ -359,6 +394,9 @@ actor PluginManager {
         let plugin = try JSONDecoder().decode(PluginRule.self, from: data)
         guard Int(plugin.api) ?? 0 <= maxSupportedAPILevel else {
             throw PluginError.incompatibleAPI(plugin.api)
+        }
+        guard !shouldRejectDeprecated(plugin) else {
+            throw PluginError.deprecatedRule(plugin.name)
         }
         return plugin
     }
@@ -1322,6 +1360,7 @@ enum PluginError: LocalizedError {
     case invalidURL(String)
     case invalidSharePayload
     case incompatibleAPI(String)
+    case deprecatedRule(String)
     case unsupportedAPIRequestMethod(String)
     case repositoryDownloadFailed(String, String)
     case storageUnavailable(String)
@@ -1341,6 +1380,8 @@ enum PluginError: LocalizedError {
             return "Invalid Kazumi rule payload"
         case .incompatibleAPI(let api):
             return "Rule API \(api) is not compatible with this app"
+        case .deprecatedRule(let name):
+            return "规则 \(name) 已被规则仓库弃用"
         case .unsupportedAPIRequestMethod(let method):
             return "Rule API request method \(method) is not supported"
         case .repositoryDownloadFailed(let fileName, let reason):
