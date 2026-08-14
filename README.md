@@ -1,3 +1,5 @@
+
+
 # KazumiTV
 
 > 注意：此项目与 [Kazumi](https://github.com/Predidit/Kazumi) 并非同一作者，为经过原作者同意开发的 Apple TV 移植版本。
@@ -36,7 +38,7 @@ KazumiTV 目前处于活跃开发阶段。应用面向 tvOS 平台，使用 `URL
 
 ## 构建
 
-生成 Xcode 项目：
+请确保在包含 `project.yml` 的项目根目录执行以下命令：
 
 ```bash
 xcodegen generate
